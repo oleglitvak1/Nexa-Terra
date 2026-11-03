@@ -6,7 +6,7 @@
 //!
 //! Usage: `nexa-tools [SOLS] [--orders PRESET]` (presets: content/standing_orders.ron).
 
-use nexa_sim::orders::{OrdersDef, SkipReason};
+use nexa_sim::orders::OrdersDef;
 use nexa_sim::{SimEvent, World};
 use nexa_types::TICKS_PER_SOL;
 
@@ -75,17 +75,12 @@ fn main() {
                     slot,
                     action,
                     reason,
-                } => {
-                    let why = match reason {
-                        SkipReason::Overridden => "overridden",
-                        SkipReason::Rejected => "rejected",
-                    };
-                    println!(
-                        "[SIM] {stamp}  order {} {why}: {}",
-                        slot + 1,
-                        action.render()
-                    )
-                }
+                } => println!(
+                    "[SIM] {stamp}  order {} {}: {}",
+                    slot + 1,
+                    reason.label(),
+                    action.render()
+                ),
             }
         }
     }
@@ -112,7 +107,11 @@ fn main() {
 }
 
 fn usage(problem: &str) -> ! {
-    let presets: Vec<String> = OrdersDef::shipped().presets.into_keys().collect();
+    let presets: Vec<&str> = OrdersDef::shipped()
+        .presets
+        .keys()
+        .map(String::as_str)
+        .collect();
     eprintln!("nexa-tools: {problem}");
     eprintln!("usage: nexa-tools [SOLS] [--orders PRESET]");
     eprintln!("presets: {}", presets.join(", "));

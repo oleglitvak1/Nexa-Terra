@@ -10,6 +10,7 @@ use crate::SimEvent;
 use nexa_types::{Command, ModuleId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 /// A condition a card watches. Water and emergency candles come with those systems.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,9 +73,13 @@ impl OrdersDef {
         ron::from_str(text).map_err(|e| e.to_string())
     }
 
-    pub fn shipped() -> Self {
+    /// Parsed once: every new [`Orders`] and every pre-orders save reads the tuning.
+    pub fn shipped() -> &'static Self {
+        static SHIPPED: OnceLock<OrdersDef> = OnceLock::new();
         // Checked by this module's tests, so failing here is a build bug.
-        Self::from_ron(STANDING_ORDERS).expect("standing orders content is valid")
+        SHIPPED.get_or_init(|| {
+            Self::from_ron(STANDING_ORDERS).expect("standing orders content is valid")
+        })
     }
 }
 
@@ -119,6 +124,15 @@ pub enum SkipReason {
     Overridden,
     /// The colony refused the command.
     Rejected,
+}
+
+impl SkipReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            SkipReason::Overridden => "overridden",
+            SkipReason::Rejected => "rejected",
+        }
+    }
 }
 
 /// What an action takes control of for the hour, so lower-priority cards can't undo it.
@@ -190,7 +204,8 @@ impl Action {
         }
     }
 
-    fn module(&self) -> &ModuleId {
+    /// The module this action switches, or whose heat line it steers.
+    pub fn module(&self) -> &ModuleId {
         match self {
             Action::Activate(id) | Action::Deactivate(id) => id,
             Action::DivertHeat { to: id } | Action::ShareHeat { line_of: id } => id,

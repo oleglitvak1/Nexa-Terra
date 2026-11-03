@@ -4,7 +4,6 @@ use crate::terminal::{Ink, Terminal};
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::grid::Tile;
 use nexa_sim::machines::MachineState;
-use nexa_sim::orders::SkipReason;
 use nexa_sim::SimEvent;
 use nexa_types::Tick;
 
@@ -63,13 +62,17 @@ pub fn log_line(at: Tick, event: &SimEvent) -> String {
             state_label(*state)
         ),
         SimEvent::OrderFired { slot, .. } => format!("{stamp} ORDER {} FIRED", slot + 1),
-        SimEvent::OrderActionSkipped { slot, reason, .. } => {
-            let why = match reason {
-                SkipReason::Overridden => "OVERRIDDEN",
-                SkipReason::Rejected => "REJECTED",
-            };
-            format!("{stamp} ORDER {} {why}", slot + 1)
-        }
+        // The module, not the whole action: the full text overflows the log panel.
+        SimEvent::OrderActionSkipped {
+            slot,
+            action,
+            reason,
+        } => format!(
+            "{stamp} ORDER {} {} {}",
+            slot + 1,
+            reason.label().to_uppercase(),
+            action.module().as_str().to_uppercase()
+        ),
     }
 }
 
@@ -236,6 +239,17 @@ mod tests {
         };
         let fired = SimEvent::OrderFired { slot: 0, order };
         assert_eq!(log_line(Tick(51), &fired), "S001 H25 ORDER 1 FIRED");
+        let skipped = SimEvent::OrderActionSkipped {
+            slot: 1,
+            action: nexa_sim::orders::Action::DivertHeat {
+                to: ModuleId::new("smelter_01"),
+            },
+            reason: nexa_sim::orders::SkipReason::Overridden,
+        };
+        assert_eq!(
+            log_line(Tick(51), &skipped),
+            "S001 H25 ORDER 2 OVERRIDDEN SMELTER_01"
+        );
     }
 
     #[test]
