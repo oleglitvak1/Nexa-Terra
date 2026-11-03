@@ -46,6 +46,13 @@ pub struct ModuleDef {
     pub start_temp_centi_c: Option<i32>,
 }
 
+impl ModuleDef {
+    /// Generates, stores or draws power, so it must touch a power conduit.
+    pub fn uses_power(&self) -> bool {
+        self.output_kw > 0 || self.draw_kw > 0 || self.battery.is_some()
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -341,8 +348,7 @@ impl Colony {
             };
             let power_net = single(&nets.module_power[i], "power")?;
             let heat_net = single(&nets.module_heat[i], "heat")?;
-            let uses_power = m.output_kw > 0 || m.draw_kw > 0 || m.battery.is_some();
-            if uses_power && power_net.is_none() {
+            if m.uses_power() && power_net.is_none() {
                 return Err(ContentError::OffGrid(m.id));
             }
             let charge_kwh = match m.battery {
@@ -442,7 +448,7 @@ impl std::fmt::Display for CommandError {
 impl std::error::Error for CommandError {}
 
 impl Module {
-    fn failed(&self) -> bool {
+    pub fn failed(&self) -> bool {
         self.machine.as_ref().is_some_and(Machine::is_failed)
     }
 

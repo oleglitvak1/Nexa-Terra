@@ -10,7 +10,11 @@ use crate::SimEvent;
 use nexa_types::{Command, ModuleId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 use std::sync::OnceLock;
+
+/// Power thresholds a card accepts: outside this a card would never fire, or never re-arm.
+pub const POWER_PERCENT: RangeInclusive<u8> = 1..=100;
 
 /// A condition a card watches. Water and emergency candles come with those systems.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +178,8 @@ impl Trigger {
     fn cleared(&self, colony: &Colony, tuning: &OrderTuning) -> bool {
         match self {
             Trigger::PowerBelowPercent(p) => {
-                let rearm = (u16::from(*p) + u16::from(tuning.power_margin_percent)).min(100);
+                let rearm = (u16::from(*p) + u16::from(tuning.power_margin_percent))
+                    .min(u16::from(*POWER_PERCENT.end()));
                 u16::from(colony.power_percent()) >= rearm
             }
             Trigger::TempBelow { module, centi_c } => temp(colony, module).is_some_and(|t| {
@@ -274,7 +279,7 @@ impl StandingOrder {
         }
         for trigger in &self.triggers {
             if let Trigger::PowerBelowPercent(p) = trigger {
-                if !(1..=100).contains(p) {
+                if !POWER_PERCENT.contains(p) {
                     return Err(OrderError::PercentOutOfRange(*p));
                 }
             }
@@ -337,6 +342,11 @@ impl Orders {
         self.cards.is_empty()
     }
 
+    /// Every slot is taken; [`Self::add`] would refuse a card.
+    pub fn is_full(&self) -> bool {
+        self.cards.len() >= usize::from(self.tuning.memory)
+    }
+
     pub fn get(&self, slot: usize) -> Option<&StandingOrder> {
         self.cards.get(slot).map(|c| &c.order)
     }
@@ -349,7 +359,7 @@ impl Orders {
     /// Store a card in the next slot. It starts armed, so it fires on the next
     /// tick if its triggers already hold.
     pub fn add(&mut self, order: StandingOrder, colony: &Colony) -> Result<usize, OrderError> {
-        if self.cards.len() >= usize::from(self.tuning.memory) {
+        if self.is_full() {
             return Err(OrderError::MemoryFull {
                 memory: self.tuning.memory,
             });

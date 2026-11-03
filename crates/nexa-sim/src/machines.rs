@@ -23,6 +23,18 @@ pub enum MachineState {
     Offline,
 }
 
+impl MachineState {
+    pub fn label(self) -> &'static str {
+        match self {
+            MachineState::Nominal => "nominal",
+            MachineState::Overheat => "overheat",
+            MachineState::Freeze => "freeze",
+            MachineState::Burnout => "burnout",
+            MachineState::Offline => "offline",
+        }
+    }
+}
+
 /// The temperature range, in centi-degrees Celsius, where a machine runs at 0% wear.
 ///
 /// Fields are private so min <= max holds however a band is built, including

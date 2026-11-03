@@ -10,6 +10,7 @@ use macroquad::prelude::KeyCode;
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::orders::{
     format_centi_c, Action, EditorTuning, OrderError, OrdersDef, StandingOrder, Trigger,
+    POWER_PERCENT,
 };
 use nexa_sim::World;
 
@@ -25,6 +26,9 @@ const FIRST_PRIORITY: u8 = 1;
 fn tuning() -> EditorTuning {
     OrdersDef::shipped().editor
 }
+
+/// Key help for every list-picking step.
+const PICK_HELP: &str = "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK";
 
 const TRIGGER_KINDS: [&str; 3] = ["grid.power < N%", "MODULE.temp < N", "MODULE.temp > N"];
 
@@ -72,10 +76,7 @@ impl ActionKind {
     /// Only offer modules the action can do something to.
     fn fits(self, m: &Module) -> bool {
         match self {
-            ActionKind::Activate | ActionKind::Shutdown => {
-                let def = m.def();
-                def.draw_kw > 0 || def.output_kw > 0 || def.battery.is_some()
-            }
+            ActionKind::Activate | ActionKind::Shutdown => m.def().uses_power(),
             ActionKind::DivertHeat | ActionKind::ShareHeat => m.heat_net().is_some(),
         }
     }
@@ -162,8 +163,8 @@ impl OrdersEditor {
         }
         match key {
             KeyCode::N => {
-                let memory = world.orders.tuning().memory;
-                if count >= usize::from(memory) {
+                if world.orders.is_full() {
+                    let memory = world.orders.tuning().memory;
                     self.say(OrderError::MemoryFull { memory });
                 } else {
                     self.message = None;
@@ -426,7 +427,7 @@ fn draw_draft(
             t.put_str(LEFT, row, "ADD TRIGGER: WATCH WHAT?", Ink::Bright);
             let items: Vec<String> = TRIGGER_KINDS.iter().map(|s| s.to_string()).collect();
             picker.draw(t, LEFT, row + 2, height, &items);
-            "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK"
+            PICK_HELP
         }
         Step::PickWatched { picker, .. } => {
             t.put_str(LEFT, row, "ADD TRIGGER: WHICH MODULE?", Ink::Bright);
@@ -435,7 +436,7 @@ fn draw_draft(
                 .map(|m| format!("{:<12}{}", m.id(), format_centi_c(m.temp_centi_c())))
                 .collect();
             picker.draw(t, LEFT, row + 2, height, &items);
-            "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK"
+            PICK_HELP
         }
         Step::SetThreshold(trigger) => {
             t.put_str(LEFT, row, "ADD TRIGGER: SET THRESHOLD", Ink::Bright);
@@ -451,7 +452,7 @@ fn draw_draft(
             t.put_str(LEFT, row, "ADD ACTION: DO WHAT?", Ink::Bright);
             let items: Vec<String> = ACTION_KINDS.iter().map(|k| k.label().to_string()).collect();
             picker.draw(t, LEFT, row + 2, height, &items);
-            "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK"
+            PICK_HELP
         }
         Step::PickTarget(kind, picker) => {
             t.put_str(LEFT, row, "ADD ACTION: WHICH MODULE?", Ink::Bright);
@@ -460,7 +461,7 @@ fn draw_draft(
                 .map(|m| m.id().to_string())
                 .collect();
             picker.draw(t, LEFT, row + 2, height, &items);
-            "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK"
+            PICK_HELP
         }
     }
 }
@@ -493,7 +494,7 @@ fn nudge(trigger: &mut Trigger, up: bool, tuning: &EditorTuning) {
                 (false, p) if p <= step => p.saturating_sub(1),
                 (false, p) => p - step,
             }
-            .clamp(1, 100);
+            .clamp(*POWER_PERCENT.start(), *POWER_PERCENT.end());
         }
         Trigger::TempBelow { centi_c, .. } | Trigger::TempAbove { centi_c, .. } => {
             let step = tuning.temp_step_centi_c;

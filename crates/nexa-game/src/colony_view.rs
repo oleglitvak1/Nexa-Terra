@@ -3,7 +3,6 @@
 use crate::terminal::{Ink, Terminal};
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::grid::Tile;
-use nexa_sim::machines::MachineState;
 use nexa_sim::orders::format_centi_c;
 use nexa_sim::SimEvent;
 use nexa_types::Tick;
@@ -23,28 +22,14 @@ pub fn fmt_temp(centi_c: i32) -> String {
     }
 }
 
-fn state_label(state: MachineState) -> &'static str {
-    match state {
-        MachineState::Nominal => "NOMINAL",
-        MachineState::Overheat => "OVERHEAT",
-        MachineState::Freeze => "FREEZE",
-        MachineState::Burnout => "BURNOUT",
-        MachineState::Offline => "OFFLINE",
-    }
-}
-
-fn failed(m: &Module) -> bool {
-    m.machine().is_some_and(|machine| machine.is_failed())
-}
-
 /// The POWER column: battery charge, generator output, or a consumer's supply.
 pub fn power_label(m: &Module) -> String {
     let def = m.def();
-    if !m.active() && (def.output_kw > 0 || def.draw_kw > 0 || def.battery.is_some()) {
+    if !m.active() && def.uses_power() {
         "OFF".into()
     } else if let Some(b) = def.battery {
         format!("{}/{}", m.charge_kwh(), b.capacity_kwh)
-    } else if failed(m) {
+    } else if m.failed() {
         "--".into()
     } else if def.output_kw > 0 {
         format!("+{}kW", def.output_kw)
@@ -56,23 +41,22 @@ pub fn power_label(m: &Module) -> String {
 }
 
 pub fn log_line(at: Tick, event: &SimEvent) -> String {
-    let stamp = format!("S{:03} H{:02}", at.sol(), at.hour_of_sol());
     // Cards show 1-based, as the terminal numbers its slots.
     match event {
         SimEvent::SolStarted { sol } => format!("SOL {sol:03} BEGINS"),
         SimEvent::MachineStateChanged { module, state } => format!(
-            "{stamp} {} {}",
+            "{at} {} {}",
             module.as_str().to_uppercase(),
-            state_label(*state)
+            state.label().to_uppercase()
         ),
-        SimEvent::OrderFired { slot, .. } => format!("{stamp} ORDER {} FIRED", slot + 1),
+        SimEvent::OrderFired { slot, .. } => format!("{at} ORDER {} FIRED", slot + 1),
         // The module, not the whole action: the full text overflows the log panel.
         SimEvent::OrderActionSkipped {
             slot,
             action,
             reason,
         } => format!(
-            "{stamp} ORDER {} {} {}",
+            "{at} ORDER {} {} {}",
             slot + 1,
             reason.label().to_uppercase(),
             action.module().as_str().to_uppercase()
@@ -98,7 +82,7 @@ pub fn draw_map(t: &mut Terminal, colony: &Colony, blink: bool) {
                 Tile::Module(i) => {
                     let m = &colony.modules()[i];
                     let glyph = m.def().glyph;
-                    if failed(m) {
+                    if m.failed() {
                         (if blink { glyph } else { ' ' }, Ink::Bright)
                     } else if m.running() {
                         (glyph, Ink::Bright)
@@ -133,11 +117,11 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
     for m in colony.modules() {
         let (state, temp, wear) = match m.machine() {
             Some(machine) => (
-                state_label(machine.state()),
+                machine.state().label().to_uppercase(),
                 fmt_temp(m.temp_centi_c()),
                 format!("{}%", machine.wear_bp() / 100),
             ),
-            None => ("--", String::new(), "--".into()),
+            None => ("--".into(), String::new(), "--".into()),
         };
         let line = format!(
             "{:<12}{:<9}{:>7} {:>4}  {}",
@@ -147,7 +131,7 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
             wear,
             power_label(m)
         );
-        let ink = if failed(m) {
+        let ink = if m.failed() {
             Ink::Bright
         } else if m.active() {
             Ink::Amber
@@ -178,6 +162,7 @@ pub fn draw_log<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexa_sim::machines::MachineState;
     use nexa_sim::World;
     use nexa_types::{Command, ModuleId};
 

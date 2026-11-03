@@ -30,6 +30,13 @@ impl Tick {
     }
 }
 
+/// Compact log stamp, e.g. `S001 H02`.
+impl std::fmt::Display for Tick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "S{:03} H{:02}", self.sol(), self.hour_of_sol())
+    }
+}
+
 /// Stable name of a colony module, as written in content files (e.g. `hab_01`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -78,5 +85,10 @@ mod tests {
         assert_eq!(Tick(25).sol(), 0);
         assert_eq!(Tick(26).sol(), 1);
         assert_eq!(Tick(27).hour_of_sol(), 1);
+    }
+
+    #[test]
+    fn tick_displays_as_a_log_stamp() {
+        assert_eq!(Tick(27).to_string(), "S001 H01");
     }
 }
