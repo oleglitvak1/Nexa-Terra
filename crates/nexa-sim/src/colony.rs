@@ -567,8 +567,8 @@ impl Colony {
     }
 
     /// Running modules pour heat into their line's pool, shared among the line's
-    /// machines (or all of it to a diversion target); then everything cools
-    /// toward ambient. A module off any line keeps its own heat.
+    /// working machines (or all of it to a diversion target); then everything
+    /// cools toward ambient. A module off any line keeps its own heat.
     fn route_heat(&mut self) {
         let n = self.modules.len();
         let mut gain = vec![0i64; n];
@@ -585,15 +585,20 @@ impl Colony {
             let recipients = match divert {
                 Some(target) => vec![*target],
                 None => {
-                    let machines: Vec<usize> = members
+                    // A failed machine gets no share, so it cools like the
+                    // wreck it is; diverting to it on purpose still works.
+                    let working: Vec<usize> = members
                         .iter()
                         .copied()
-                        .filter(|&i| self.modules[i].machine.is_some())
+                        .filter(|&i| self.modules[i].machine.is_some() && !self.modules[i].failed())
                         .collect();
-                    if machines.is_empty() {
+                    if working.is_empty() {
                         members
+                            .into_iter()
+                            .filter(|&i| !self.modules[i].failed())
+                            .collect()
                     } else {
-                        machines
+                        working
                     }
                 }
             };
@@ -1067,6 +1072,48 @@ mod tests {
     }
 
     #[test]
+    fn failed_machines_get_no_share_of_line_heat() {
+        // x burns out on its first hour; after that the heater's 601 all goes to y.
+        let mut c = Colony::from_ron(
+            r#"(
+                ambient_centi_c: 0, heat_loss_percent: 0,
+                layout: ["XYR", "~~~"],
+                modules: [
+                    (id: "x", glyph: 'X', machine: Some((
+                        tolerance: (min_centi_c: -100000, max_centi_c: 100), wear_bp_per_hour: 10000))),
+                    (id: "y", glyph: 'Y', machine: Some((
+                        tolerance: (min_centi_c: -100000, max_centi_c: 100000), wear_bp_per_hour: 0))),
+                    (id: "heater", glyph: 'R', heat_out_centi_c: 601),
+                ],
+            )"#,
+        )
+        .unwrap();
+        assert_eq!(c.tick(), vec![changed("x", MachineState::Burnout)]);
+        assert_eq!((temp(&c, "x"), temp(&c, "y")), (301, 300));
+        c.tick();
+        assert_eq!((temp(&c, "x"), temp(&c, "y")), (301, 901));
+    }
+
+    #[test]
+    fn a_failed_hab_cools_toward_ambient() {
+        let mut c = ash_plain();
+        c.apply(&Command::Deactivate(id("heater_01"))).unwrap();
+        // The damaged seal cracks at hour 53, just above -4 C.
+        let events = run(&mut c, 53);
+        assert_eq!(
+            events.last(),
+            Some(&changed("hab_01", MachineState::Offline))
+        );
+        let before = temp(&c, "hab_01");
+        run(&mut c, 26);
+        assert!(
+            temp(&c, "hab_01") < before - 1000,
+            "{before} -> {}",
+            temp(&c, "hab_01")
+        );
+    }
+
+    #[test]
     fn commands_reject_unknown_modules_and_modules_off_heat_lines() {
         let mut c = power_rig();
         assert_eq!(
@@ -1108,11 +1155,12 @@ mod tests {
         let mut c = ash_plain();
         c.apply(&Command::Deactivate(id("heater_01"))).unwrap();
         let events = run(&mut c, 3 * 26);
-        // The damaged hab's seal cracks within the three Sols; the sound one is
-        // frozen and wearing, but holds a little longer.
+        // The damaged hab's seal cracks within the three Sols. The line's heat
+        // then goes to the machines still working, so the sound hab recovers.
         assert!(events.contains(&changed("hab_01", MachineState::Offline)));
+        assert!(events.contains(&changed("hab_02", MachineState::Freeze)));
         assert_eq!(state(&c, "hab_01"), MachineState::Offline);
-        assert_eq!(state(&c, "hab_02"), MachineState::Freeze);
+        assert_eq!(state(&c, "hab_02"), MachineState::Nominal);
     }
 
     #[test]
