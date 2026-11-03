@@ -134,6 +134,16 @@ impl Grid {
         })
     }
 
+    /// Whether the tiles fill the grid and every module tile names one of
+    /// `module_count` modules; a saved grid isn't built by [`Self::parse`].
+    pub fn is_consistent(&self, module_count: usize) -> bool {
+        self.width.checked_mul(self.height) == Some(self.tiles.len())
+            && self
+                .tiles
+                .iter()
+                .all(|t| !matches!(t, Tile::Module(m) if *m >= module_count))
+    }
+
     pub fn width(&self) -> usize {
         self.width
     }

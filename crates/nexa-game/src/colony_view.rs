@@ -36,10 +36,10 @@ fn failed(m: &Module) -> bool {
 /// The POWER column: battery charge, generator output, or a consumer's supply.
 pub fn power_label(m: &Module) -> String {
     let def = m.def();
-    if let Some(b) = def.battery {
-        format!("{}/{}", m.charge_kwh(), b.capacity_kwh)
-    } else if !m.active() && (def.output_kw > 0 || def.draw_kw > 0) {
+    if !m.active() && (def.output_kw > 0 || def.draw_kw > 0 || def.battery.is_some()) {
         "OFF".into()
+    } else if let Some(b) = def.battery {
+        format!("{}/{}", m.charge_kwh(), b.capacity_kwh)
     } else if failed(m) {
         "--".into()
     } else if def.output_kw > 0 {

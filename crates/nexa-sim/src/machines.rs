@@ -1,8 +1,5 @@
-//! Machine thermal state: tolerance bands and the operating state they imply.
-//!
-//! Scope for this task: classifying temperature against a tolerance band and
-//! tracking the resulting state. Wear accumulation and the parts needed to
-//! clear a failure (architecture.md's `machines` module) land in a later task.
+//! Machine thermal state: tolerance bands, the operating state they imply, wear,
+//! failure and the part a repair needs.
 
 use crate::parts::PartKind;
 use serde::{Deserialize, Serialize};
@@ -10,8 +7,8 @@ use serde::{Deserialize, Serialize};
 /// A machine's operating state, driven by its temperature vs. its [`ToleranceBand`].
 ///
 /// Burnout and Offline are terminal: per the game design's Component-Based
-/// Repairs, clearing them needs a replacement part (a later task), not just a
-/// temperature change back into the nominal band.
+/// Repairs, clearing them needs a replacement part ([`Machine::repair`]), not
+/// just a temperature change back into the nominal band.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MachineState {
     /// Within the tolerance band: 0% wear.
@@ -113,8 +110,10 @@ impl ToleranceBand {
 /// A single machine: its tolerance band, current temperature and resulting state.
 ///
 /// Fields are private so `state` can't drift from the temperature: every
-/// temperature change goes through [`Machine::set_temperature`].
+/// temperature change goes through [`Machine::set_temperature`], and a save is
+/// checked on load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawMachine")]
 pub struct Machine {
     tolerance: ToleranceBand,
     temp_centi_c: i32,
@@ -125,6 +124,50 @@ pub struct Machine {
 
 /// Wear at which a machine fails: 100.00%.
 pub const MAX_WEAR_BP: u16 = 10_000;
+
+/// Unvalidated wire form of [`Machine`]; serde checks it via `TryFrom`.
+#[derive(Deserialize)]
+struct RawMachine {
+    tolerance: ToleranceBand,
+    temp_centi_c: i32,
+    state: MachineState,
+    wear_bp: u16,
+}
+
+/// A saved machine whose state doesn't follow from its temperature and wear.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InconsistentMachine;
+
+impl std::fmt::Display for InconsistentMachine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "machine state doesn't match its temperature and wear")
+    }
+}
+
+impl std::error::Error for InconsistentMachine {}
+
+impl TryFrom<RawMachine> for Machine {
+    type Error = InconsistentMachine;
+
+    fn try_from(raw: RawMachine) -> Result<Self, Self::Error> {
+        let m = Machine {
+            tolerance: raw.tolerance,
+            temp_centi_c: raw.temp_centi_c,
+            state: raw.state,
+            wear_bp: raw.wear_bp,
+        };
+        // A failed machine keeps its state whatever the temperature; a working
+        // one must match its band and be below failure wear.
+        let ok = m.wear_bp <= MAX_WEAR_BP
+            && (m.is_failed()
+                || (m.state == m.tolerance.classify(m.temp_centi_c) && m.wear_bp < MAX_WEAR_BP));
+        if ok {
+            Ok(m)
+        } else {
+            Err(InconsistentMachine)
+        }
+    }
+}
 
 impl Machine {
     /// A machine at the given starting temperature; state follows from the band.
@@ -353,5 +396,15 @@ mod tests {
         let loaded: Machine = ron::from_str(&saved).unwrap();
         assert_eq!(loaded, m);
         assert_eq!(loaded.state(), MachineState::Burnout);
+    }
+
+    #[test]
+    fn saves_with_a_state_that_doesnt_follow_are_rejected() {
+        let tol = "tolerance: (min_centi_c: -500, max_centi_c: 8000)";
+        let load = |rest: &str| ron::from_str::<Machine>(&format!("({tol}, {rest})"));
+        assert!(load("temp_centi_c: 0, state: Nominal, wear_bp: 0").is_ok());
+        assert!(load("temp_centi_c: -4000, state: Nominal, wear_bp: 0").is_err());
+        assert!(load("temp_centi_c: -4000, state: Freeze, wear_bp: 10000").is_err());
+        assert!(load("temp_centi_c: 0, state: Offline, wear_bp: 12000").is_err());
     }
 }

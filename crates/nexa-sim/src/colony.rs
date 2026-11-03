@@ -178,7 +178,10 @@ impl Module {
     }
 }
 
+/// Fields are private and a save is checked on load (see [`SaveError`]), so the
+/// tick can rely on what [`Colony::from_def`] guarantees.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawColony")]
 pub struct Colony {
     grid: Grid,
     ambient_centi_c: i32,
@@ -188,6 +191,110 @@ pub struct Colony {
     /// Per heat network: the one module all its heat goes to, if diverted.
     heat_divert: Vec<Option<usize>>,
     inventory: Inventory,
+}
+
+/// Unchecked wire form of [`Colony`]; serde checks it via `TryFrom`.
+#[derive(Deserialize)]
+struct RawColony {
+    grid: Grid,
+    ambient_centi_c: i32,
+    heat_loss_percent: u8,
+    modules: Vec<Module>,
+    power_net_count: usize,
+    heat_divert: Vec<Option<usize>>,
+    inventory: Inventory,
+}
+
+/// Why a saved colony was rejected: it breaks something content loading guarantees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveError {
+    HeatLossOutOfRange(u8),
+    /// The tiles don't fill the grid, or name a module that doesn't exist.
+    BadGrid,
+    /// The module's networks aren't the ones its tiles touch.
+    NetworksChanged(ModuleId),
+    BatteryOverfull(ModuleId),
+    /// The machine doesn't match its def or its module's temperature.
+    MachineMismatch(ModuleId),
+    /// A heat diversion points at a module that isn't on that line.
+    BadDiversion,
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::HeatLossOutOfRange(p) => write!(f, "heat_loss_percent {p} is above 100"),
+            SaveError::BadGrid => write!(f, "grid tiles don't match its size or modules"),
+            SaveError::NetworksChanged(id) => {
+                write!(f, "module {id}'s networks don't match the grid")
+            }
+            SaveError::BatteryOverfull(id) => write!(f, "module {id}'s battery is above capacity"),
+            SaveError::MachineMismatch(id) => {
+                write!(
+                    f,
+                    "module {id}'s machine doesn't match its def or temperature"
+                )
+            }
+            SaveError::BadDiversion => write!(f, "a heat diversion targets a module off its line"),
+        }
+    }
+}
+
+impl std::error::Error for SaveError {}
+
+impl TryFrom<RawColony> for Colony {
+    type Error = SaveError;
+
+    fn try_from(raw: RawColony) -> Result<Self, Self::Error> {
+        if raw.heat_loss_percent > 100 {
+            return Err(SaveError::HeatLossOutOfRange(raw.heat_loss_percent));
+        }
+        let n = raw.modules.len();
+        if !raw.grid.is_consistent(n) {
+            return Err(SaveError::BadGrid);
+        }
+        // Rebuild the networks from the tiles rather than trusting saved indices.
+        let nets = raw.grid.networks(n);
+        if raw.power_net_count != nets.power_count || raw.heat_divert.len() != nets.heat_count {
+            return Err(SaveError::BadGrid);
+        }
+        for (i, m) in raw.modules.iter().enumerate() {
+            let power: Vec<usize> = m.power_net.into_iter().collect();
+            let heat: Vec<usize> = m.heat_net.into_iter().collect();
+            if power != nets.module_power[i] || heat != nets.module_heat[i] {
+                return Err(SaveError::NetworksChanged(m.def.id.clone()));
+            }
+            if m.charge_kwh > m.def.battery.map_or(0, |b| b.capacity_kwh) {
+                return Err(SaveError::BatteryOverfull(m.def.id.clone()));
+            }
+            let machine_ok = match (&m.machine, &m.def.machine) {
+                (Some(machine), Some(def)) => {
+                    machine.tolerance() == def.tolerance && machine.temp_centi_c() == m.temp_centi_c
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if !machine_ok {
+                return Err(SaveError::MachineMismatch(m.def.id.clone()));
+            }
+        }
+        for (net, divert) in raw.heat_divert.iter().enumerate() {
+            if let Some(i) = *divert {
+                if raw.modules.get(i).and_then(|m| m.heat_net) != Some(net) {
+                    return Err(SaveError::BadDiversion);
+                }
+            }
+        }
+        Ok(Self {
+            grid: raw.grid,
+            ambient_centi_c: raw.ambient_centi_c,
+            heat_loss_percent: raw.heat_loss_percent,
+            modules: raw.modules,
+            power_net_count: raw.power_net_count,
+            heat_divert: raw.heat_divert,
+            inventory: raw.inventory,
+        })
+    }
 }
 
 impl Colony {
@@ -339,9 +446,14 @@ impl Module {
         self.machine.as_ref().is_some_and(Machine::is_failed)
     }
 
+    /// Switched on and not failed: may generate, store or draw power this hour.
+    fn on(&self) -> bool {
+        self.active && !self.failed()
+    }
+
     /// Doing its job this hour: switched on, not failed, and powered if it needs power.
     pub fn running(&self) -> bool {
-        self.active && !self.failed() && (self.def.draw_kw == 0 || self.powered)
+        self.on() && (self.def.draw_kw == 0 || self.powered)
     }
 }
 
@@ -409,28 +521,24 @@ impl Colony {
     }
 
     /// Generators and batteries supply each network's consumers in module order;
-    /// a consumer that doesn't fit what's left goes dark this hour.
+    /// a consumer that doesn't fit what's left goes dark this hour. A switched-off
+    /// battery neither supplies nor charges.
     fn route_power(&mut self) {
         for m in &mut self.modules {
             m.powered = false;
         }
         for net in 0..self.power_net_count {
             let members: Vec<usize> = (0..self.modules.len())
-                .filter(|&i| self.modules[i].power_net == Some(net))
+                .filter(|&i| self.modules[i].power_net == Some(net) && self.modules[i].on())
                 .collect();
-            let generated: u32 = members
-                .iter()
-                .map(|&i| &self.modules[i])
-                .filter(|m| m.active && !m.failed())
-                .map(|m| m.def.output_kw)
-                .sum();
+            let generated: u32 = members.iter().map(|&i| self.modules[i].def.output_kw).sum();
             let stored: u32 = members.iter().map(|&i| self.modules[i].charge_kwh).sum();
             let mut available = generated + stored;
             let mut used = 0;
             for &i in &members {
                 let m = &mut self.modules[i];
                 let draw = m.def.draw_kw;
-                if m.active && !m.failed() && draw > 0 && draw <= available {
+                if draw > 0 && draw <= available {
                     m.powered = true;
                     available -= draw;
                     used += draw;
@@ -693,6 +801,51 @@ mod tests {
         ));
     }
 
+    // --- Saves: a loaded colony must hold what content loading guarantees.
+
+    /// Save `c`, rewrite one field of the RON text, and load it back.
+    fn reload_with(c: &Colony, from: &str, to: &str) -> Result<Colony, ron::error::SpannedError> {
+        let saved = ron::to_string(c).unwrap();
+        assert!(saved.contains(from), "{from} not in save");
+        ron::from_str(&saved.replacen(from, to, 1))
+    }
+
+    #[test]
+    fn an_untouched_save_loads() {
+        let mut c = ash_plain();
+        c.apply(&Command::DivertHeat { to: id("hab_01") }).unwrap();
+        run(&mut c, 30);
+        assert_eq!(reload_with(&c, "(", "(").unwrap(), c);
+    }
+
+    #[test]
+    fn saves_with_an_overfull_battery_are_rejected() {
+        let c = ash_plain();
+        // The live charge, which the save writes just before `machine`.
+        assert!(reload_with(&c, "charge_kwh:300,machine", "charge_kwh:450,machine").is_err());
+    }
+
+    #[test]
+    fn saves_with_a_module_moved_off_its_network_are_rejected() {
+        let c = ash_plain();
+        assert!(reload_with(&c, "power_net:Some(0)", "power_net:None").is_err());
+    }
+
+    #[test]
+    fn saves_with_a_machine_at_another_temperature_are_rejected() {
+        let c = ash_plain();
+        let saved = ron::to_string(&c).unwrap();
+        // The smelter's machine copy of its temperature, not the module's.
+        let machine_temp = "tolerance:(min_centi_c:-500,max_centi_c:8000),temp_centi_c:1400";
+        assert!(saved.contains(machine_temp));
+        let edited = saved.replacen(
+            machine_temp,
+            "tolerance:(min_centi_c:-500,max_centi_c:8000),temp_centi_c:1500",
+            1,
+        );
+        assert!(ron::from_str::<Colony>(&edited).is_err());
+    }
+
     fn run(c: &mut Colony, hours: u64) -> Vec<SimEvent> {
         (0..hours).flat_map(|_| c.tick()).collect()
     }
@@ -764,6 +917,16 @@ mod tests {
         run(&mut c, 5);
         assert_eq!(charge(&c), 20);
         assert_eq!(c.power_percent(), 100);
+    }
+
+    #[test]
+    fn a_switched_off_battery_neither_supplies_nor_charges() {
+        let mut c = power_rig();
+        c.tick(); // battery charges to 4
+        c.apply(&Command::Deactivate(id("bat"))).unwrap();
+        c.tick(); // 10 available without the battery: c stays dark
+        assert!(!powered(&c, "c"));
+        assert_eq!(charge(&c), 4);
     }
 
     #[test]
@@ -944,11 +1107,12 @@ mod tests {
     fn heater_off_for_three_sols_freezes_the_seal() {
         let mut c = ash_plain();
         c.apply(&Command::Deactivate(id("heater_01"))).unwrap();
-        let events = run(&mut c, 2 * 26);
-        assert!(events.contains(&changed("hab_02", MachineState::Freeze)));
+        let events = run(&mut c, 3 * 26);
+        // The damaged hab's seal cracks within the three Sols; the sound one is
+        // frozen and wearing, but holds a little longer.
+        assert!(events.contains(&changed("hab_01", MachineState::Offline)));
+        assert_eq!(state(&c, "hab_01"), MachineState::Offline);
         assert_eq!(state(&c, "hab_02"), MachineState::Freeze);
-        run(&mut c, 2 * 26);
-        assert_eq!(state(&c, "hab_02"), MachineState::Offline);
     }
 
     #[test]
