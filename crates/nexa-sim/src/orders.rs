@@ -259,9 +259,16 @@ impl Action {
 }
 
 impl StandingOrder {
-    /// The card in the terminal's command syntax.
+    /// The card in the terminal's command syntax. A side with nothing on it yet (a
+    /// draft in the editor) shows as `...`; a stored card always has both.
     pub fn render(&self) -> String {
-        let join = |parts: Vec<String>| parts.join(" AND ");
+        let join = |parts: Vec<String>| {
+            if parts.is_empty() {
+                "...".to_string()
+            } else {
+                parts.join(" AND ")
+            }
+        };
         format!(
             "IF {} THEN {}",
             join(self.triggers.iter().map(Trigger::render).collect()),
@@ -460,6 +467,9 @@ fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
     colony.module(id).map(|m| m.temp_centi_c())
 }
 
+/// Temperatures are stored in hundredths of a degree.
+pub const CENTI_PER_DEGREE: i32 = 100;
+
 /// Centi-degrees as degrees C with one decimal place, rounding half away from zero.
 pub fn format_centi_c(centi_c: i32) -> String {
     let deci = (i64::from(centi_c).abs() + 5) / 10;
@@ -549,6 +559,15 @@ mod tests {
             order.render(),
             "IF hab_01.temp < -5.0C AND hab_02.temp > 14.5C \
              THEN activate heater_02 AND share heat ON hab_01"
+        );
+    }
+
+    #[test]
+    fn an_empty_side_renders_as_a_placeholder() {
+        assert_eq!(card(1, vec![], vec![]).render(), "IF ... THEN ...");
+        assert_eq!(
+            card(1, vec![], vec![Action::Activate(id("heater_02"))]).render(),
+            "IF ... THEN activate heater_02"
         );
     }
 

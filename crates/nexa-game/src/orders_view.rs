@@ -10,7 +10,7 @@ use macroquad::prelude::KeyCode;
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::orders::{
     format_centi_c, Action, EditorTuning, OrderError, OrdersDef, StandingOrder, Trigger,
-    POWER_PERCENT,
+    CENTI_PER_DEGREE, POWER_PERCENT,
 };
 use nexa_sim::World;
 
@@ -30,7 +30,28 @@ fn tuning() -> EditorTuning {
 /// Key help for every list-picking step.
 const PICK_HELP: &str = "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK";
 
-const TRIGGER_KINDS: [&str; 3] = ["grid.power < N%", "MODULE.temp < N", "MODULE.temp > N"];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TriggerKind {
+    PowerBelow,
+    TempBelow,
+    TempAbove,
+}
+
+const TRIGGER_KINDS: [TriggerKind; 3] = [
+    TriggerKind::PowerBelow,
+    TriggerKind::TempBelow,
+    TriggerKind::TempAbove,
+];
+
+impl TriggerKind {
+    fn label(self) -> &'static str {
+        match self {
+            TriggerKind::PowerBelow => "grid.power < N%",
+            TriggerKind::TempBelow => "MODULE.temp < N",
+            TriggerKind::TempAbove => "MODULE.temp > N",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -80,6 +101,11 @@ impl ActionKind {
             ActionKind::DivertHeat | ActionKind::ShareHeat => m.heat_net().is_some(),
         }
     }
+}
+
+/// Where `kind` sits in its picker list, so backing out returns the cursor to it.
+fn slot_of<T: PartialEq>(kinds: &[T], kind: &T) -> usize {
+    kinds.iter().position(|k| k == kind).unwrap_or(0)
 }
 
 /// Modules whose temperature is worth watching: machines and anything on a heat line.
@@ -211,116 +237,83 @@ impl OrdersEditor {
         mut added: Vec<Part>,
     ) {
         let tuning = tuning();
+        let colony = &world.colony;
         let step = match step {
-            Step::Menu => match key {
-                KeyCode::T => Step::PickTrigger(ListPicker::default()),
-                KeyCode::A => Step::PickAction(ListPicker::default()),
-                KeyCode::Left => {
-                    order.priority = order.priority.saturating_sub(1).max(FIRST_PRIORITY);
-                    Step::Menu
-                }
-                KeyCode::Right => {
-                    order.priority = order.priority.saturating_add(1).min(tuning.priority_max);
-                    Step::Menu
-                }
-                KeyCode::Backspace => {
-                    match added.pop() {
-                        Some(Part::Trigger) => {
-                            order.triggers.pop();
-                        }
-                        Some(Part::Action) => {
-                            order.actions.pop();
-                        }
-                        None => {}
-                    }
-                    Step::Menu
-                }
-                KeyCode::Enter | KeyCode::KpEnter => match world.add_order(order.clone()) {
-                    Ok(slot) => {
-                        self.message = Some(format!("CARD {} STORED", slot + 1));
-                        self.list = ListPicker::at(slot);
-                        return;
-                    }
-                    Err(e) => {
-                        self.say(e);
-                        Step::Menu
-                    }
-                },
-                KeyCode::Escape => {
-                    self.message = Some("CARD DISCARDED".into());
-                    return;
-                }
-                _ => Step::Menu,
+            Step::Menu => match self.menu_key(key, world, &mut order, &mut added, &tuning) {
+                Some(step) => step,
+                // Stored or discarded: the draft is gone.
+                None => return,
             },
-            Step::PickTrigger(mut picker) => match picker.handle(key, TRIGGER_KINDS.len()) {
-                Pick::Chosen(0) => {
-                    Step::SetThreshold(Trigger::PowerBelowPercent(tuning.power_start_percent))
-                }
-                Pick::Chosen(i) => Step::PickWatched {
-                    above: i == 2,
-                    picker: ListPicker::default(),
-                },
-                Pick::Back => Step::Menu,
-                Pick::Pending => Step::PickTrigger(picker),
-            },
-            Step::PickWatched { above, mut picker } => {
-                let modules = watched(&world.colony);
-                match picker.handle(key, modules.len()) {
-                    Pick::Chosen(i) => {
-                        let m = modules[i];
-                        let module = m.id().clone();
-                        // Start from the current reading, rounded down to a whole degree.
-                        let centi_c = (m.temp_centi_c().div_euclid(100) * 100)
-                            .clamp(tuning.temp_min_centi_c, tuning.temp_max_centi_c);
-                        Step::SetThreshold(if above {
-                            Trigger::TempAbove { module, centi_c }
-                        } else {
-                            Trigger::TempBelow { module, centi_c }
-                        })
-                    }
-                    Pick::Back => Step::PickTrigger(ListPicker::at(if above { 2 } else { 1 })),
-                    Pick::Pending => Step::PickWatched { above, picker },
-                }
-            }
-            Step::SetThreshold(mut trigger) => match key {
-                KeyCode::Right | KeyCode::Up => {
-                    nudge(&mut trigger, true, &tuning);
-                    Step::SetThreshold(trigger)
-                }
-                KeyCode::Left | KeyCode::Down => {
-                    nudge(&mut trigger, false, &tuning);
-                    Step::SetThreshold(trigger)
-                }
-                KeyCode::Enter | KeyCode::KpEnter => {
+            Step::PickTrigger(picker) => trigger_key(key, picker, &tuning),
+            Step::PickWatched { above, picker } => watched_key(key, colony, above, picker, &tuning),
+            Step::SetThreshold(trigger) => match threshold_key(key, trigger, &tuning) {
+                Threshold::Editing(trigger) => Step::SetThreshold(trigger),
+                Threshold::Done(Some(trigger)) => {
                     order.triggers.push(trigger);
                     added.push(Part::Trigger);
                     Step::Menu
                 }
-                KeyCode::Escape | KeyCode::Backspace => Step::Menu,
-                _ => Step::SetThreshold(trigger),
+                Threshold::Done(None) => Step::Menu,
             },
-            Step::PickAction(mut picker) => match picker.handle(key, ACTION_KINDS.len()) {
-                Pick::Chosen(i) => Step::PickTarget(ACTION_KINDS[i], ListPicker::default()),
-                Pick::Back => Step::Menu,
-                Pick::Pending => Step::PickAction(picker),
-            },
+            Step::PickAction(picker) => action_key(key, picker),
             Step::PickTarget(kind, mut picker) => {
-                let modules = targets(&world.colony, kind);
+                let modules = targets(colony, kind);
                 match picker.handle(key, modules.len()) {
                     Pick::Chosen(i) => {
                         order.actions.push(kind.build(modules[i]));
                         added.push(Part::Action);
                         Step::Menu
                     }
-                    Pick::Back => {
-                        let back = ACTION_KINDS.iter().position(|k| *k == kind).unwrap_or(0);
-                        Step::PickAction(ListPicker::at(back))
-                    }
+                    Pick::Back => Step::PickAction(ListPicker::at(slot_of(&ACTION_KINDS, &kind))),
                     Pick::Pending => Step::PickTarget(kind, picker),
                 }
             }
         };
         self.mode = Mode::Draft { order, step, added };
+    }
+
+    /// The draft's top level. `None` when the card was stored or discarded.
+    fn menu_key(
+        &mut self,
+        key: KeyCode,
+        world: &mut World,
+        order: &mut StandingOrder,
+        added: &mut Vec<Part>,
+        tuning: &EditorTuning,
+    ) -> Option<Step> {
+        match key {
+            KeyCode::T => return Some(Step::PickTrigger(ListPicker::default())),
+            KeyCode::A => return Some(Step::PickAction(ListPicker::default())),
+            KeyCode::Left => {
+                order.priority = order.priority.saturating_sub(1).max(FIRST_PRIORITY);
+            }
+            KeyCode::Right => {
+                order.priority = order.priority.saturating_add(1).min(tuning.priority_max);
+            }
+            KeyCode::Backspace => match added.pop() {
+                Some(Part::Trigger) => {
+                    order.triggers.pop();
+                }
+                Some(Part::Action) => {
+                    order.actions.pop();
+                }
+                None => {}
+            },
+            KeyCode::Enter | KeyCode::KpEnter => match world.add_order(order.clone()) {
+                Ok(slot) => {
+                    self.message = Some(format!("CARD {} STORED", slot + 1));
+                    self.list = ListPicker::at(slot);
+                    return None;
+                }
+                Err(e) => self.say(e),
+            },
+            KeyCode::Escape => {
+                self.message = Some("CARD DISCARDED".into());
+                return None;
+            }
+            _ => {}
+        }
+        Some(Step::Menu)
     }
 
     fn say(&mut self, error: OrderError) {
@@ -390,6 +383,80 @@ impl OrdersEditor {
     }
 }
 
+fn trigger_key(key: KeyCode, mut picker: ListPicker, tuning: &EditorTuning) -> Step {
+    match picker.handle(key, TRIGGER_KINDS.len()) {
+        Pick::Chosen(i) => match TRIGGER_KINDS[i] {
+            TriggerKind::PowerBelow => {
+                Step::SetThreshold(Trigger::PowerBelowPercent(tuning.power_start_percent))
+            }
+            TriggerKind::TempBelow | TriggerKind::TempAbove => Step::PickWatched {
+                above: TRIGGER_KINDS[i] == TriggerKind::TempAbove,
+                picker: ListPicker::default(),
+            },
+        },
+        Pick::Back => Step::Menu,
+        Pick::Pending => Step::PickTrigger(picker),
+    }
+}
+
+fn watched_key(
+    key: KeyCode,
+    colony: &Colony,
+    above: bool,
+    mut picker: ListPicker,
+    tuning: &EditorTuning,
+) -> Step {
+    let modules = watched(colony);
+    match picker.handle(key, modules.len()) {
+        Pick::Chosen(i) => {
+            let m = modules[i];
+            let module = m.id().clone();
+            // Start from the current reading, rounded down to a whole degree.
+            let centi_c = (m.temp_centi_c().div_euclid(CENTI_PER_DEGREE) * CENTI_PER_DEGREE)
+                .clamp(tuning.temp_min_centi_c, tuning.temp_max_centi_c);
+            Step::SetThreshold(if above {
+                Trigger::TempAbove { module, centi_c }
+            } else {
+                Trigger::TempBelow { module, centi_c }
+            })
+        }
+        Pick::Back => {
+            let kind = if above {
+                TriggerKind::TempAbove
+            } else {
+                TriggerKind::TempBelow
+            };
+            Step::PickTrigger(ListPicker::at(slot_of(&TRIGGER_KINDS, &kind)))
+        }
+        Pick::Pending => Step::PickWatched { above, picker },
+    }
+}
+
+/// A threshold being keyed in, or finished: added to the card, or cancelled.
+enum Threshold {
+    Editing(Trigger),
+    Done(Option<Trigger>),
+}
+
+fn threshold_key(key: KeyCode, mut trigger: Trigger, tuning: &EditorTuning) -> Threshold {
+    match key {
+        KeyCode::Right | KeyCode::Up => nudge(&mut trigger, true, tuning),
+        KeyCode::Left | KeyCode::Down => nudge(&mut trigger, false, tuning),
+        KeyCode::Enter | KeyCode::KpEnter => return Threshold::Done(Some(trigger)),
+        KeyCode::Escape | KeyCode::Backspace => return Threshold::Done(None),
+        _ => {}
+    }
+    Threshold::Editing(trigger)
+}
+
+fn action_key(key: KeyCode, mut picker: ListPicker) -> Step {
+    match picker.handle(key, ACTION_KINDS.len()) {
+        Pick::Chosen(i) => Step::PickTarget(ACTION_KINDS[i], ListPicker::default()),
+        Pick::Back => Step::Menu,
+        Pick::Pending => Step::PickAction(picker),
+    }
+}
+
 fn draw_draft(
     t: &mut Terminal,
     world: &World,
@@ -404,7 +471,7 @@ fn draw_draft(
     // Leave a blank row, the step's label, a blank row and one list row above `bottom`;
     // a card too long for that shows its latest parts, the ones being edited.
     let room = bottom.saturating_sub(row + 4).max(1);
-    let lines = wrap(&draft_text(order), WIDTH);
+    let lines = wrap(&order.render(), WIDTH);
     let skip = if lines.len() > room {
         t.put_str(LEFT, row, "...", Ink::Dim);
         row += 1;
@@ -425,7 +492,10 @@ fn draw_draft(
         }
         Step::PickTrigger(picker) => {
             t.put_str(LEFT, row, "ADD TRIGGER: WATCH WHAT?", Ink::Bright);
-            let items: Vec<String> = TRIGGER_KINDS.iter().map(|s| s.to_string()).collect();
+            let items: Vec<String> = TRIGGER_KINDS
+                .iter()
+                .map(|k| k.label().to_string())
+                .collect();
             picker.draw(t, LEFT, row + 2, height, &items);
             PICK_HELP
         }
@@ -464,22 +534,6 @@ fn draw_draft(
             PICK_HELP
         }
     }
-}
-
-/// The card as it will render, with `...` in any slot still empty.
-fn draft_text(order: &StandingOrder) -> String {
-    let join = |parts: Vec<String>| {
-        if parts.is_empty() {
-            "...".to_string()
-        } else {
-            parts.join(" AND ")
-        }
-    };
-    format!(
-        "IF {} THEN {}",
-        join(order.triggers.iter().map(Trigger::render).collect()),
-        join(order.actions.iter().map(Action::render).collect())
-    )
 }
 
 /// Power moves in whole steps, but by 1 below the first step so every value the sim
