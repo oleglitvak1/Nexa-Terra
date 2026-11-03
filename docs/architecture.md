@@ -87,7 +87,7 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
 | `crew` | Six named specialists, skills, stress, morale, assignments | `CrewId`, `CrewMember`, `Assignment` (Ground, Flight), `Trait` |
-| `orders` | Standing Orders rule cards: typed model + evaluator | `Trigger`, `Action`, `StandingOrder`, `render()`, `evaluate()` |
+| `orders` | Standing Orders rule cards: typed model + evaluator, run each tick from `World::tick` | `Trigger`, `Action`, `StandingOrder`, `Orders`, `render()`, `evaluate()` |
 | `flight` | The Slip transit, fuel, cargo integrity, delays | `Voyage`, `Manifest`, `HazardEvent`, `Resolution` |
 | `station` | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
 | `echoes` | Logged moral choices and their delayed payoffs | `EchoSeed`, `EchoTrigger` |
@@ -104,17 +104,32 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 **Standing Orders rule cards.** Orders are stored as typed Rust enums, never as strings. The player builds each one as a rule card by filling trigger, action and priority slots from lists, and the terminal renders the card in command syntax:
 
 ```text
-IF grid.power < 25% THEN shutdown smelter AND divert heat TO hab_01
-IF hab_01.temp < -5C THEN activate heater_02
+IF grid.power < 25% THEN shutdown smelter_01 AND divert heat TO hab_01
+IF hab_01.temp < -5.0C THEN activate heater_02
 ```
 
 ```rust
-pub enum Trigger { PowerBelowPercent(u8), WaterBelowLiters(u32), TempBelow { module: ModuleId, centi_c: i32 } }
-pub enum Action  { Deactivate(ModuleId), DivertHeat { to: ModuleId }, Activate(ModuleId), EngageEmergencyCandles }
+pub enum Trigger { PowerBelowPercent(u8), TempBelow { module: ModuleId, centi_c: i32 }, TempAbove { module: ModuleId, centi_c: i32 } }
+pub enum Action  { Activate(ModuleId), Deactivate(ModuleId), DivertHeat { to: ModuleId }, ShareHeat { line_of: ModuleId } }
 pub struct StandingOrder { pub triggers: Vec<Trigger>, pub actions: Vec<Action>, pub priority: u8 }
 ```
 
-Rules are evaluated in priority order once per tick, with a cap on rule count tied to the terminal's "memory" as a game mechanic. A typed-entry parser that produces the same enums can be added later; the slice doesn't need one.
+Only triggers and actions the colony can act on today are in the enums. `WaterBelowLiters` and `EngageEmergencyCandles` join them when the water and life-support systems exist. Each action maps to one colony `Command` and goes through `Colony::apply`, so a card can do nothing a player couldn't. Temperatures render in C with one decimal place, rounded half away from zero from integer centi-degrees.
+
+How the Caretaker runs them (`orders::Orders`, stored on `World` so cards and their firing state are in saves):
+
+- **When.** Once per tick, before the hour's power and heat step, against the colony as it stands. Actions take effect in that same hour.
+- **Order.** By priority, 1 first; equal priorities run in list (slot) order. All of a card's triggers must hold for it to fire.
+- **Conflicts.** Once a card switches a module, or diverts or shares a heat line, lower-priority cards can't touch that module or line for the rest of the hour. Their blocked actions are reported as `OrderActionSkipped { reason: Overridden }`, so the higher-priority card wins instead of whichever ran last.
+- **Firing rule: on the edge, with a re-arm margin.** A card fires once when its triggers become true, then is disarmed. It re-arms only when one of its triggers has moved back past its threshold by a margin (2.0 C for temperatures, 5 percentage points for power; both in `content/standing_orders.ron`). A new card starts armed, so it fires on the next tick if its triggers already hold.
+  - *Why not fire every tick while true:* a level-triggered card would re-issue its commands every hour, overriding the player's manual changes and fighting any other card that touches the same module. It would also flood the base log.
+  - *Why a margin:* with no orders, the Ash Plain habs flicker between FREEZE and NOMINAL every hour or two from Sol 3, swinging about 2 C either side of the 5.0 C band edge. A `hab_01.temp < 5.0C` card with no margin fires 18 times by Sol 6; with the 2.0 C margin it fires once (`the_margin_stops_a_card_firing_on_every_flutter`).
+- **Memory.** The terminal holds a fixed number of cards (`memory`, 8 for now). Adding past it fails with `OrderError::MemoryFull`, and so does loading a save that holds more. Cards naming unknown modules, or steering heat on a module off any heat line, are rejected when added and when a save loads.
+- **Events.** A fired card emits `SimEvent::OrderFired { slot, order }`, followed by the events its commands cause, so the base log can show what the Caretaker did.
+
+Preset card sets live in `content/standing_orders.ron`. `cargo run -p nexa-tools -- 10 --orders caretaker` runs one headless. The `caretaker` preset is three cards: at power below 25%, shut down the smelter, start heater_02 and divert line heat to hab_01, then swing the heat to whichever hab hasn't passed 16.0 C. It keeps both habs nominal with no added wear through Sol 45. The cost is the smelter, which freezes and goes Offline on Sol 5. Keeping the smelter alive as well needs near-perfect hour-by-hour control with the battery near empty, which a small card set can't do on the current content.
+
+A typed-entry parser that produces the same enums can be added later; the slice doesn't need one.
 
 **Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
 
@@ -232,10 +247,13 @@ All content is RON (Rusty Object Notation) loaded through `serde`, validated at 
 | `content/stations/scrap_barge_77.ron` | Vendors, stock, patience, dialogue, the prospector dilemma |
 | `content/epochs.ron` | Atmosphere targets and epoch requirements |
 | `content/landing_ash_plain.ron` | Hand-built 32 x 32 active map, non-navigable backdrop, initial damage |
+| `content/standing_orders.ron` | Standing Orders tuning (terminal memory, re-arm margins) and preset card sets |
 | `assets/manifest.ron` | Asset ID → fallback chain |
 | `audio/cues.ron` | Event → sound cue |
 
 **Saves.** A save is the serialized `World` plus `SimRng` state, written through the `Storage` trait. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
+
+A save also keeps the content it was made with: each module's `ModuleDef` and the Standing Orders tuning (terminal memory, re-arm margins). So a save replays the same after a balance change, and edits to `content/` reach only new games. `format_version` and `migrate()` aren't built yet; when they are, `migrate()` is where a deliberate rebalance reaches old saves.
 
 **Validation.** A `nexa-sim` test loads every content file and checks cross-references (a machine's required part exists, every hazard option has a valid check). Broken content fails the build, not the playtest.
 
@@ -265,7 +283,7 @@ Milestones are ordered, not dated; each ends with something playable or testable
 
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
 2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
-3. **Standing Orders.** Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
+3. **Standing Orders.** Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended. *(Model and evaluator done; editor screen next.)*
 4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
 5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.
 6. **Scrap Barge 77.** Haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
