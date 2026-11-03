@@ -264,7 +264,7 @@ Because the sim is pure and deterministic, most of the game can be tested withou
 Milestones are ordered, not dated; each ends with something playable or testable. Milestones 1 through 6 are "Slice 0": the whole vertical-slice loop in text.
 
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
-2. **Grid and machines.** Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
+2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
 3. **Standing Orders.** Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
 4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
 5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.
