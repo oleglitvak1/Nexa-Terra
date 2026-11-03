@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexa-types",
+    "crates/nexa-sim",
+    "crates/nexa-game",
+    "crates/nexa-tools",
+]
+default-members = ["crates/nexa-game"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+nexa-types = { path = "crates/nexa-types" }
+nexa-sim = { path = "crates/nexa-sim" }
+serde = { version = "1", features = ["derive"] }
+macroquad = "0.4"
+
+[profile.dev.package."*"]
+# Optimize dependencies even in debug builds so the window stays smooth.
+opt-level = 2

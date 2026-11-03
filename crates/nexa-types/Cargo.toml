@@ -1,0 +1,10 @@
+[package]
+name = "nexa-types"
+description = "Shared data types for Nexa Terra: IDs, time units, commands, events."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true

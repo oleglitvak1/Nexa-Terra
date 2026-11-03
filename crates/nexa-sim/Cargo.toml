@@ -1,0 +1,11 @@
+[package]
+name = "nexa-sim"
+description = "Pure, deterministic Nexa Terra simulation core. No graphics, no I/O, no clock."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexa-types.workspace = true
+serde.workspace = true

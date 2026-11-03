@@ -1,0 +1,12 @@
+[package]
+name = "nexa-game"
+description = "Nexa Terra game client (desktop now, WASM later), built on macroquad."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexa-sim.workspace = true
+nexa-types.workspace = true
+macroquad.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "nexa-tools"
+description = "Headless developer tools: balance runs, content checks, generators."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nexa-sim.workspace = true
+nexa-types.workspace = true
