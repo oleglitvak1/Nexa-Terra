@@ -1,0 +1,84 @@
+// Nexa Terra: Ash Plain landing site, the vertical slice's 32 x 32 active map.
+//
+// Units: temperatures in centi-degrees C, power in kW (a tick is one hour, so
+// kW per tick is kWh), wear in basis points (10000 = 100% = failure).
+//
+// Layout legend: '.' ground  '#' fence  '_' landing pad  '=' power conduit
+//                '~' heat line  '+' power and heat in one tile
+// plus each module's glyph. A module joins the power and heat networks its
+// tiles touch (up, down, left, right).
+//
+// Balance at landfall: smelter heat plus heater_01 hold the habs near 14 C.
+// The full load is 34 kW against 30 kW generated, so the battery drains
+// 4 kWh an hour and empties in about three Sols unless something is shut off.
+(
+    ambient_centi_c: -4000,
+    heat_loss_percent: 10,
+    layout: [
+        "################################",
+        "#..............................#",
+        "#..GG..B...OO..................#",
+        "#..GG..B...OO..................#",
+        "#..========================....#",
+        "#...=.....=....=..=....=.......#",
+        "#...=.....=....=..=....=.......#",
+        "#..HHH...hhh...R..r...SSS......#",
+        "#..HHH...hhh...~..~...SSS......#",
+        "#..HHH...hhh...~..~....~.......#",
+        "#...~~~~~~~~~~~~~~~~~~~~.......#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#...........________...........#",
+        "#...........________...........#",
+        "#...........________...........#",
+        "#...........________...........#",
+        "#...........________...........#",
+        "#...........________...........#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "#..............................#",
+        "################################",
+    ],
+    // When power runs short, modules are supplied in this order and the rest go dark.
+    modules: [
+        (id: "gen_01", glyph: 'G', output_kw: 30),
+        (id: "bat_01", glyph: 'B', battery: Some((capacity_kwh: 400, charge_kwh: 300))),
+        (id: "scrubber_01", glyph: 'O', draw_kw: 5),
+        (
+            id: "hab_01", glyph: 'H', draw_kw: 3, start_temp_centi_c: Some(1400),
+            // Hard landing: the seal is already 40% worn.
+            machine: Some((
+                tolerance: (min_centi_c: 500, max_centi_c: 3000),
+                wear_bp_per_hour: 130,
+                start_wear_bp: 4000,
+            )),
+        ),
+        (
+            id: "hab_02", glyph: 'h', draw_kw: 3, start_temp_centi_c: Some(1400),
+            machine: Some((
+                tolerance: (min_centi_c: 500, max_centi_c: 3000),
+                wear_bp_per_hour: 130,
+            )),
+        ),
+        (id: "heater_01", glyph: 'R', draw_kw: 8, heat_out_centi_c: 600),
+        (id: "heater_02", glyph: 'r', draw_kw: 8, heat_out_centi_c: 600, starts_active: false),
+        (
+            id: "smelter_01", glyph: 'S', draw_kw: 15, heat_out_centi_c: 1200,
+            start_temp_centi_c: Some(1400),
+            machine: Some((
+                tolerance: (min_centi_c: -500, max_centi_c: 8000),
+                wear_bp_per_hour: 130,
+            )),
+        ),
+    ],
+    parts: { VitonSeal: 2, TungstenFilament: 1 },
+)

@@ -9,7 +9,10 @@
 use nexa_types::{Tick, TICKS_PER_SOL};
 use serde::{Deserialize, Serialize};
 
+pub mod colony;
+pub mod grid;
 pub mod machines;
+pub mod parts;
 
 /// The whole state of one player's game. Grows milestone by milestone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

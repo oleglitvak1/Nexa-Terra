@@ -118,7 +118,12 @@ pub struct Machine {
     tolerance: ToleranceBand,
     temp_centi_c: i32,
     state: MachineState,
+    /// Accumulated wear in basis points; the machine fails at [`MAX_WEAR_BP`].
+    wear_bp: u16,
 }
+
+/// Wear at which a machine fails: 100.00%.
+pub const MAX_WEAR_BP: u16 = 10_000;
 
 impl Machine {
     /// A machine at the given starting temperature; state follows from the band.
@@ -128,7 +133,18 @@ impl Machine {
             tolerance,
             temp_centi_c,
             state,
+            wear_bp: 0,
         }
+    }
+
+    /// Start with existing wear, e.g. damage from a hard landing. Capped below failure.
+    pub fn with_wear(mut self, wear_bp: u16) -> Self {
+        self.wear_bp = wear_bp.min(MAX_WEAR_BP - 1);
+        self
+    }
+
+    pub fn wear_bp(&self) -> u16 {
+        self.wear_bp
     }
 
     pub fn tolerance(&self) -> ToleranceBand {

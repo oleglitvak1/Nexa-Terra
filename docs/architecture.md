@@ -83,6 +83,7 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | Module | Owns | Key types |
 | --- | --- | --- |
 | `grid` | Tile map, conduits, power / thermal fluid / oxygen routing | `Grid`, `Tile`, `Network`, `FlowSolver` |
+| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef` |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
 | `crew` | Six named specialists, skills, stress, morale, assignments | `CrewId`, `CrewMember`, `Assignment` (Ground, Flight), `Trait` |
