@@ -51,6 +51,23 @@ impl std::fmt::Display for ModuleId {
     }
 }
 
+/// Something the player (or a Standing Order) asks the colony to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Command {
+    Activate(ModuleId),
+    Deactivate(ModuleId),
+    /// Send all heat on the module's heat line to that module.
+    DivertHeat {
+        to: ModuleId,
+    },
+    /// Undo a diversion: heat on this module's line is shared again.
+    ShareHeat {
+        line_of: ModuleId,
+    },
+    /// Fit a spare part to a failed machine.
+    Repair(ModuleId),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

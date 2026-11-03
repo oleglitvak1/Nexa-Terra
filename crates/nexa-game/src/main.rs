@@ -47,7 +47,7 @@ impl App {
     fn new() -> Self {
         Self {
             term: Terminal::new(COLS, ROWS),
-            world: World::new(),
+            world: World::landfall(),
             screen: Screen::Boot {
                 started: get_time(),
             },

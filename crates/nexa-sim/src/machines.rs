@@ -4,6 +4,7 @@
 //! tracking the resulting state. Wear accumulation and the parts needed to
 //! clear a failure (architecture.md's `machines` module) land in a later task.
 
+use crate::parts::PartKind;
 use serde::{Deserialize, Serialize};
 
 /// A machine's operating state, driven by its temperature vs. its [`ToleranceBand`].
@@ -168,6 +169,39 @@ impl Machine {
         }
     }
 
+    pub fn is_failed(&self) -> bool {
+        matches!(self.state, MachineState::Burnout | MachineState::Offline)
+    }
+
+    /// One hour of wear: only while out of band. Reaching [`MAX_WEAR_BP`] fails the
+    /// machine (Overheat burns out, Freeze goes offline).
+    pub fn wear_for_an_hour(&mut self, bp_per_hour: u16) {
+        let failure = match self.state {
+            MachineState::Overheat => MachineState::Burnout,
+            MachineState::Freeze => MachineState::Offline,
+            MachineState::Nominal | MachineState::Burnout | MachineState::Offline => return,
+        };
+        self.wear_bp = self.wear_bp.saturating_add(bp_per_hour).min(MAX_WEAR_BP);
+        if self.wear_bp == MAX_WEAR_BP {
+            self.state = failure;
+        }
+    }
+
+    /// The part a repair consumes, if the machine has failed.
+    pub fn part_needed(&self) -> Option<PartKind> {
+        match self.state {
+            MachineState::Burnout => Some(PartKind::TungstenFilament),
+            MachineState::Offline => Some(PartKind::VitonSeal),
+            MachineState::Nominal | MachineState::Overheat | MachineState::Freeze => None,
+        }
+    }
+
+    /// Fit the new part: wear resets and the state follows temperature again.
+    pub fn repair(&mut self) {
+        self.wear_bp = 0;
+        self.state = self.tolerance.classify(self.temp_centi_c);
+    }
+
     /// Sustained overheat destroys the heating filament (architecture.md, machines module).
     pub fn burnout(&mut self) {
         self.state = MachineState::Burnout;
@@ -249,6 +283,46 @@ mod tests {
 
         m.set_temperature(0);
         assert_eq!(m.state(), MachineState::Offline);
+    }
+
+    #[test]
+    fn wear_builds_only_out_of_band_and_fails_at_full() {
+        let mut m = Machine::new(band(), 0);
+        m.wear_for_an_hour(6000);
+        assert_eq!(m.wear_bp(), 0, "no wear in band");
+
+        m.set_temperature(-600);
+        m.wear_for_an_hour(6000);
+        assert_eq!((m.state(), m.wear_bp()), (MachineState::Freeze, 6000));
+        m.wear_for_an_hour(6000);
+        assert_eq!(
+            (m.state(), m.wear_bp()),
+            (MachineState::Offline, MAX_WEAR_BP)
+        );
+    }
+
+    #[test]
+    fn overheat_wear_burns_out() {
+        let mut m = Machine::new(band(), 9000);
+        m.wear_for_an_hour(MAX_WEAR_BP);
+        assert_eq!(m.state(), MachineState::Burnout);
+        assert_eq!(m.part_needed(), Some(PartKind::TungstenFilament));
+    }
+
+    #[test]
+    fn repair_resets_wear_and_reclassifies() {
+        let mut m = Machine::new(band(), -600).with_wear(9000);
+        m.wear_for_an_hour(2000);
+        assert_eq!(m.part_needed(), Some(PartKind::VitonSeal));
+
+        m.repair();
+        // Still below the band, so it's freezing again, with fresh wear.
+        assert_eq!((m.state(), m.wear_bp()), (MachineState::Freeze, 0));
+    }
+
+    #[test]
+    fn healthy_machines_need_no_part() {
+        assert_eq!(Machine::new(band(), 0).part_needed(), None);
     }
 
     #[test]
