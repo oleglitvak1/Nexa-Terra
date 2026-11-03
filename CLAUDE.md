@@ -1,9 +1,16 @@
 # Nexa Terra: rules for AI-assisted work
 
 Nexa Terra is a neo-noir colony sim / tramp-freighter game written in Rust on
-macroquad (a library, not an engine). Design lives in the project's GDD and the
-"Nexa Terra — Technical Architecture" doc; this file is the short version for
-day-to-day coding.
+macroquad (a library, not an engine). This file is the short version for
+day-to-day coding. The full design lives in `docs/`:
+
+- `docs/game-design.md`: what the game is (crew, systems, epochs, the vertical
+  slice, day budget, fuel ledger, scope, definition of done).
+- `docs/architecture.md`: how it's built (crates, sim modules, presentation layers,
+  platform rules, shared universe, testing, milestone roadmap).
+
+Read the relevant doc before starting a milestone. If code and docs disagree, ask
+before changing either; update the docs in the same commit when a decision changes.
 
 ## Commands
 

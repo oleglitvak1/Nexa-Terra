@@ -1,0 +1,284 @@
+# Nexa Terra — Technical Architecture
+
+Source of truth for this file in the repo. Mirrors the "Nexa Terra — Technical Architecture" doc in Claude (Nov 2026).
+
+## Summary and key decisions
+
+Nexa Terra is built in Rust on macroquad, with no game engine. It ships as a desktop app first, adds a browser (WASM) build later, and is designed from day one so a shared online universe can be added without rewriting the game.
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Language | Rust (stable) | Compiler catches AI-generated mistakes; enums fit the game's state machines; safe long-term refactoring; one language for client, web build and server |
+| Graphics / input / audio | macroquad (library, not engine) | Thin, code-first, native and WASM from one codebase, shader support for the CRT look |
+| First platform | Desktop (Windows, macOS, Linux) | Simplest to develop and debug |
+| Later platform | Browser via WASM | Shareable playtest link; kept possible by the portability rules below |
+| Presentation start | Terminal look inside a macroquad window | One front end that grows from text to CRT shader to sprites; the terminal stays in the final game as the ship console |
+| Visual target | Tier 2: stylized 2D, amber CRT, vector panels | Mood of the spec at a fraction of 3D cost; mostly producible in code |
+| Multiplayer | Shared universe, async, planned not built | Each player owns a colony; stations, economy and Echoes are shared; sync happens at docking |
+| Content | Data files (RON), not code | Fast tuning and AI-friendly edits |
+
+## Guiding principles
+
+Seven rules keep every later layer (visuals, web, multiplayer) additive instead of a rewrite.
+
+1. **The simulation knows nothing about presentation.** The core takes commands and exposes state. It never draws, plays sound, reads input or touches files.
+2. **Content is data.** Machines, parts, crew, events, dialogue and tuning numbers live in data files. Code defines rules; data defines the world.
+3. **Determinism.** Same seed + same commands = same result, on every platform. Seeded RNG owned by the sim, fixed-step Sol ticks, no wall-clock time inside the sim.
+4. **Integer and fixed-point math for anything shared or economic.** Credits, cargo mass, fuel, prices, wear and temperatures use integers in explicit units (e.g. grams, centi-degrees, whole liters). Floats only in presentation.
+5. **Everything is text.** Code, data, shaders, SVGs and asset-generator scripts all live in the repo, so an AI can read and edit any part of the game.
+6. **Assets and sounds are referenced by ID with fallbacks.** The game asks for `machine.smelter`, never a file path, so art can be upgraded one piece at a time.
+7. **The universe sits behind one interface.** Anything outside the player's colony (stations, markets, other ships, Echoes) is reached only through the `Universe` trait, offline first and online later.
+
+## Workspace and crate layout
+
+One Cargo workspace with five crates; dependencies only point downward toward `nexa-types`, and only `nexa-game` knows macroquad exists.
+
+```text
+        nexa-game            nexa-tools            nexa-server (later)
+  desktop + WASM binary   headless dev tools    shared universe service
+  macroquad: window,      balance runs,         axum + Postgres,
+  input, audio, terminal  content checks        replays voyages via sim
+            \                    |                    /
+             v                   v                   v
+   +-----------------------------------------------------------+
+   | nexa-sim: pure, deterministic rules (grid, machines, crew, |
+   | orders, flight, station, echoes, epochs). No graphics, no  |
+   | file I/O, no clock. Includes OfflineUniverse. WASM-safe.   |
+   +-----------------------------------------------------------+
+                                 |
+                                 v
+   +-----------------------------------------------------------+
+   | nexa-types: shared serde data: IDs, commands, events, the  |
+   | Universe trait, universe messages                          |
+   +-----------------------------------------------------------+
+```
+
+`nexa-game` and `nexa-server` also use `nexa-types` directly. Inside `nexa-game`, a `platform` module isolates storage, timing and anything that differs between desktop and web.
+
+```text
+nexa-terra/
+  Cargo.toml          # workspace
+  CLAUDE.md           # rules for AI-assisted work
+  docs/               # game-design.md, architecture.md
+  crates/
+    nexa-types/  nexa-sim/  nexa-game/  nexa-tools/  nexa-server/ (later)
+  content/            # RON game data
+  assets/             # manifest.ron, fonts, sprites, shaders
+  audio/              # cues.ron, generated WAVs
+```
+
+## Simulation core design
+
+The sim is a pure state machine: `World` + `Command` → new `World` + a list of `SimEvent`s. The front end sends commands and renders state and events; it never mutates the world directly.
+
+```rust
+pub fn apply(world: &mut World, cmd: Command) -> Result<Vec<SimEvent>, CommandError>;
+pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; // one fixed step
+```
+
+**Time.** The base unit is a fixed tick (26 ticks per Sol: one per hour of Nexa Terra's 26-hour day). The sim never reads the clock. The front end decides how fast ticks advance (paused, 1x, fast-forward), so the colony runs real-time with pause while flight and station phases advance in discrete event steps.
+
+**Modules inside `nexa-sim`:**
+
+| Module | Owns | Key types |
+| --- | --- | --- |
+| `grid` | Tile map, conduits, power / thermal fluid / oxygen routing | `Grid`, `Tile`, `Network`, `FlowSolver` |
+| `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
+| `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
+| `crew` | Six named specialists, skills, stress, morale, assignments | `CrewId`, `CrewMember`, `Assignment` (Ground, Flight), `Trait` |
+| `orders` | Standing Orders rule cards: typed model + evaluator | `Trigger`, `Action`, `StandingOrder`, `render()`, `evaluate()` |
+| `flight` | The Slip transit, fuel, cargo integrity, delays | `Voyage`, `Manifest`, `HazardEvent`, `Resolution` |
+| `station` | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
+| `echoes` | Logged moral choices and their delayed payoffs | `EchoSeed`, `EchoTrigger` |
+| `epochs` | Atmosphere state and epoch milestones | `Atmosphere` (pressure, temp, toxicity, water), `Epoch` |
+| `blackbox` | Log of everything that happened while the crew was away | `LogEntry`, `Reconciliation` |
+| `rng` | The only source of randomness | `SimRng` (seeded, serializable, e.g. ChaCha8) |
+
+**Standing Orders rule cards.** Orders are stored as typed Rust enums, never as strings. The player builds each one as a rule card by filling trigger, action and priority slots from lists, and the terminal renders the card in command syntax:
+
+```text
+IF grid.power < 25% THEN shutdown smelter AND divert heat TO hab_01
+IF hab_01.temp < -5C THEN activate heater_02
+```
+
+```rust
+pub enum Trigger { PowerBelowPercent(u8), WaterBelowLiters(u32), TempBelow { module: ModuleId, centi_c: i32 } }
+pub enum Action  { Deactivate(ModuleId), DivertHeat { to: ModuleId }, Activate(ModuleId), EngageEmergencyCandles }
+pub struct StandingOrder { pub triggers: Vec<Trigger>, pub actions: Vec<Action>, pub priority: u8 }
+```
+
+Rules are evaluated in priority order once per tick, with a cap on rule count tied to the terminal's "memory" as a game mechanic. A typed-entry parser that produces the same enums can be added later; the slice doesn't need one.
+
+**Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
+
+## Presentation layering plan
+
+The game starts as a terminal inside a macroquad window and gains visuals layer by layer on the same front end, with no rewrite between layers.
+
+| Layer | Adds | Made by | Trigger to start |
+| --- | --- | --- | --- |
+| 0 | Full loop playable as text: character-grid terminal, ASCII colony map, text events, keyboard input | Code | Now |
+| 1 | CRT post-process shader (scanlines, curvature, phosphor glow, flicker), synthesized sound effects, ambient drones | Claude, in code | Loop is fun as text |
+| 2 | Vector cockpit / station / haggle panels (SVG rendered to PNG), code-drawn isometric tiles and machine sprites | Claude, in code | Layer 1 done |
+| 3 | Character portraits, painted scenes, music | Asset packs, AI image tools, later commissioned art | Time and budget allow |
+
+**Terminal renderer.** A fixed grid of cells (glyph, ink color) drawn with a monospace font. Layer 1 renders it to an offscreen texture and runs the CRT shader over that texture. All screens (Standing Orders console, hazard terminal, haggle, Black Box log) are views drawn into this grid at first; Layer 2 replaces regions of it with sprite panels.
+
+**Screens as views.** Each screen is a struct implementing `View { fn draw(&self, world: &World, ui: &mut Ui); fn input(&mut self, key) -> Option<Command>; }`. Views read state and emit commands, nothing more.
+
+**UI toolkit.** No egui or other third-party UI library. A small bespoke immediate-mode UI draws on the terminal cell grid: boxed frames, list selectors, slot pickers, meters and scrolling logs in a monospace font. That keeps the amber CRT look authentic and the code fully under our control.
+
+**Asset IDs with fallbacks.** An `assets/manifest.ron` maps IDs to the best available representation:
+
+```ron
+"machine.smelter": [Sprite("tiles/smelter.png"), Glyph('S', Amber)],
+"portrait.dax":    [Image("portraits/dax.png"), CommFeed("DAX THORNE")],
+```
+
+The loader takes the first entry that exists, so a missing file silently falls back to the layer below.
+
+**Audio cues.** The sim emits `SimEvent`s; the front end maps them to named cues (`alarm.overheat`, `dock.clamp`, `slip.ambient`) through `audio/cues.ron`. An unmapped cue is silent, a Layer 1 cue is a synthesized WAV, a Layer 3 cue is a recording.
+
+## Platform targets
+
+Desktop is the only shipped target until the game is done; the web build is kept compiling from the start so the later port is a build step, not a rewrite.
+
+| Target | Build | When |
+| --- | --- | --- |
+| Desktop (native) | `cargo run -p nexa-game` | From day one |
+| Web (WASM) | `cargo build -p nexa-game --target wasm32-unknown-unknown` + macroquad's JS loader | Port after the game is complete; both sim and game checked for WASM in CI from day one |
+| Server (later) | `cargo run -p nexa-server` | Only when the shared universe is built |
+
+**Portability rules (enforced in review and CI):**
+
+- No file system access outside the `platform` module. Saves and settings go through a `Storage` trait: files on desktop, browser storage on web.
+- Asset loading is async (`load_texture(...).await`), never blocking reads from disk.
+- Single-threaded game loop: `loop { update(); draw(); next_frame().await }`. No `std::thread` in game or sim code.
+- No `std::time::Instant` or `SystemTime` in sim code (it panics on WASM). Presentation uses macroquad's `get_time()`.
+- No native-only crates in `nexa-sim` or `nexa-game` (no `crossterm`, no direct OS APIs).
+- Audio starts only after the first key press ("PRESS ANY KEY TO BOOT TERMINAL"), which browsers require.
+
+## Shared universe architecture
+
+Each player owns a private colony that runs locally; stations, markets, reputation, distress calls and Echoes live in a shared universe that syncs only at launch and docking. It is designed now and built later; until then an offline implementation stands in.
+
+**What is local vs. shared**
+
+| Local (player's client, authoritative) | Shared (server, authoritative) |
+| --- | --- |
+| Colony grid, machines, parts, atmosphere | Station markets: prices, stock, tariffs |
+| Crew, stress, morale, assignments | Station reputation: Integrity and Heat per player, plus station-wide mood |
+| Standing Orders, Black Box log | Distress calls and wrecks posted by other players |
+| Epoch progress | Echo ledger: favors owed between players |
+| Voyage state while in The Slip | Constrained player messages left at stations |
+| | Universe clock |
+
+**The interface.** All game code reaches the universe through one trait:
+
+```rust
+pub trait Universe {
+    fn on_launch(&mut self, ctx: &LaunchContext) -> LaunchBriefing;      // pending echoes, slip events
+    fn on_dock(&mut self, station: StationId, report: &VoyageReport) -> DockState; // prices, reputation, posts
+    fn submit_trade(&mut self, trade: &Trade) -> Result<TradeReceipt, TradeError>;
+    fn post(&mut self, post: &UniversePost) -> Result<PostId, PostError>; // distress, message, echo seed
+}
+```
+
+- `OfflineUniverse` (built now): simulated NPC traffic, prices and Echoes, seeded and deterministic. This is the single-player game.
+- `OnlineUniverse` (later): same trait, talks to `nexa-server` over HTTPS. Falls back to cached state if offline, which The Slip's radio silence explains in the fiction.
+
+**Sync points.** Launch fetches a briefing (pending Echoes, posted distress calls on the route). Docking uploads the voyage report and trades, and downloads current station state. Nothing syncs mid-flight. No real-time networking is needed.
+
+**Server (later).** `nexa-server`: Rust, axum, Postgres, sharing `nexa-types` with the client so message formats cannot drift. Accounts via a simple token or a hosted auth provider. Expected cost at indie scale is one small VM plus a managed database.
+
+**Time model.** Each colony keeps its own Sol clock, which pauses with the player. A Master Universe Day advances every 24 real hours. A docking stamps the voyage with the current universe day, and station prices and posts are evaluated at that time.
+
+**Keeping a small universe alive.** NPC traffic from `OfflineUniverse` also runs on the server, so stations feel busy with 1 player or 1,000. Real players add to that traffic; they are never required for it.
+
+**Anti-cheat.** The client controls its own colony, so cheating there only affects that player. Anything entering the shared world is validated:
+
+- Trades are checked against plausible cargo mass, credits and the voyage's recorded timeline.
+- Because the sim is deterministic, the server can replay a voyage from its seed and command log when a report looks suspicious, using the same `nexa-sim` crate.
+- Economic values are integers end to end (principle 4), so replays match exactly.
+
+**Moderation.** Player messages use a fixed vocabulary assembled from parts, rendered as terminal codes (`DISTRESS: FUEL // WARNING: PIRATES AT SLIP-2 // THANKS: CALLAHAN`). No free text, so there is almost nothing to moderate.
+
+**Habits required now (cheap, also good for single-player):**
+
+- [ ] Every off-colony interaction goes through `Universe`
+- [ ] Universe events and posts are serializable `nexa-types` structs
+- [ ] Deterministic sim: seeded `SimRng`, fixed ticks, no wall clock
+- [ ] Integer or fixed-point math for credits, mass, fuel, prices
+- [ ] Stable unique IDs (UUID or ULID) for players, ships, crews, stations, events
+- [ ] Command log recorded per voyage (also gives replays and bug reports)
+
+## Content, data formats and saves
+
+All content is RON (Rusty Object Notation) loaded through `serde`, validated at startup, and hot-reloadable on desktop during development.
+
+| File | Holds |
+| --- | --- |
+| `content/machines.ron` | Machine kinds, nominal bands, failure modes, required parts |
+| `content/parts.ron` | Wear parts, mass, base value |
+| `content/crew.ron` | The six crew: skills, traits, stress thresholds |
+| `content/hazards.ron` | Slip hazard events, options, checks, outcomes, delay ranges |
+| `content/stations/scrap_barge_77.ron` | Vendors, stock, patience, dialogue, the prospector dilemma |
+| `content/epochs.ron` | Atmosphere targets and epoch requirements |
+| `content/landing_ash_plain.ron` | Hand-built 32 x 32 active map, non-navigable backdrop, initial damage |
+| `assets/manifest.ron` | Asset ID → fallback chain |
+| `audio/cues.ron` | Event → sound cue |
+
+**Saves.** A save is the serialized `World` plus `SimRng` state, written through the `Storage` trait. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
+
+**Validation.** A `nexa-sim` test loads every content file and checks cross-references (a machine's required part exists, every hazard option has a valid check). Broken content fails the build, not the playtest.
+
+## Testing strategy and AI-coding workflow
+
+Because the sim is pure and deterministic, most of the game can be tested without a window, which is what makes AI-driven iteration safe.
+
+**Test layers**
+
+- **Unit tests** per sim module: tolerance bands, flow routing, Standing Orders evaluation and rendering, skill checks.
+- **Scenario tests**: load a content file, apply a scripted command list, assert on the resulting `World` (e.g. "heater off for 3 Sols freezes the seal").
+- **Snapshot tests** (`insta`): the Black Box log for a fixed seed must match a stored snapshot. Any balance change shows up as a readable diff.
+- **Headless balance runs**: a `nexa-tools` binary plays thousands of seeded voyages with scripted strategies and reports survival rates and margin against the 45-Sol deadline.
+- **Property tests** (`proptest`) on orders and the economy: no command sequence produces negative cargo or fuel, or creates credits from nothing.
+
+**Working with AI**
+
+- Keep `CLAUDE.md` at the repo root with these principles, the crate rules and the commands to build, test and lint.
+- Work in small, single-purpose tasks ("add Freeze state with seal-crack failure + tests"), each ending green on `cargo test`, `cargo clippy -D warnings` and the WASM check.
+- Ask for tests first on sim changes; review the test before the implementation.
+- Treat compiler errors as the AI's feedback loop: let it iterate until it compiles and passes, then review the diff.
+- Commit after every green step so any bad direction is one `git revert` away.
+
+## Milestone roadmap
+
+Milestones are ordered, not dated; each ends with something playable or testable. Milestones 1 through 6 are "Slice 0": the whole vertical-slice loop in text.
+
+1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
+2. **Grid and machines.** Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
+3. **Standing Orders.** Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
+4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
+5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.
+6. **Scrap Barge 77.** Haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
+7. **Layer 1.** CRT shader, synthesized sound effects and ambience.
+8. **Layer 2.** Vector panels for cockpit, haggle and Black Box; code-drawn isometric tiles.
+9. **Web build.** WASM port, browser storage, playable link for testers.
+10. **Shared universe.** `nexa-server`, `OnlineUniverse`, accounts, constrained messages, server-side NPC traffic.
+11. **Layer 3.** Portraits, painted scenes, music as time and budget allow.
+
+## Design decisions
+
+All eight spec questions are decided. Three were adjusted to fit this architecture (marked below). The game design doc (`docs/game-design.md`) reflects all of them.
+
+| Topic | Decision | Architecture note |
+| --- | --- | --- |
+| Time model | Real-time with pause for the colony (1x / 2x / 3x); discrete event steps for The Slip and stations | Sim unchanged: fixed ticks, front end sets speed. 1 tick = 1 hour, 26 ticks per Sol; at 1x, 1 hour = 5 s (about 2 min 10 s per Sol). On landing the sim fast-forwards the colony through the elapsed Sols |
+| Colony view | Isometric, fixed angle | **Adjusted:** no 4-way rotation for now, since it multiplies sprite work by four. Layer 0 ASCII stays top-down; the sim grid doesn't depend on projection, so isometric is a Layer 2 rendering choice |
+| Crew split | Player decides fully, with two rules: at least one qualified pilot on *The Mullein*; at least one adult stays with Maya | Rules validated in `crew` when the Split is confirmed. Non-pilots flying via a flight manual is out of slice scope |
+| Barge 77 merchant | Silas "Grip" Vane, scrap broker running the reclamation dock. Whoever goes negotiates; Dax is best | Haggle uses the negotiator's skill and that character's own dialogue set |
+| Epoch 01 exit | Carbon filters only. Bore valves move to the start of Epoch 02 | Done in the GDD |
+| Day budget | Nominal run 23 Sols (10 ground, 5 + 5 flight, 3 station). Random hazard delays capped at +12 Sols, so the worst random case lands on Sol 35 | **Adjusted:** the cap covers random hazards only. Player-caused audits and penalties stack uncapped, so one 14-Sol audit after bad luck lands on Sol 49 and loses the colony |
+| Fail state | Hypoxia Sols 45 to 47, crew coma Sol 48, hard failure from Sol 49 with an autopsy report in the Black Box log | Effective deadline is Sol 48. **Adjusted:** the discovery is a cockpit terminal readout over the base umbilical link: scrubber saturation, O2 candles exhausted, biometric flatlines, then zero carrier on the Caretaker frequency |
+| Universe clock (shared universe) | One Master Universe Day per real 24 hours. Each colony's Sols stay local and pause with the player; the shared world is touched only at Slip entry and docking, stamped with the current universe day | Matches the sync-at-docking design. Later idea: colonies that reach Epoch 04 become permanent trade nodes on the shared star chart |
