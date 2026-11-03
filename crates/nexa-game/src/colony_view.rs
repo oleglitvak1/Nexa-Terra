@@ -4,6 +4,7 @@ use crate::terminal::{Ink, Terminal};
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::grid::Tile;
 use nexa_sim::machines::MachineState;
+use nexa_sim::orders::format_centi_c;
 use nexa_sim::SimEvent;
 use nexa_types::Tick;
 
@@ -12,11 +13,14 @@ pub const MAP_ROW: usize = 2;
 pub const PANEL_COL: usize = 36;
 const POWER_BAR_WIDTH: usize = 20;
 
-/// "+14.0C" from centi-degrees, in integer math.
+/// "+14.0C": the orders terminal's rounding, with an explicit sign so the column lines up.
 pub fn fmt_temp(centi_c: i32) -> String {
-    let sign = if centi_c < 0 { '-' } else { '+' };
-    let abs = centi_c.unsigned_abs();
-    format!("{sign}{}.{}C", abs / 100, abs % 100 / 10)
+    let text = format_centi_c(centi_c);
+    if text.starts_with('-') {
+        text
+    } else {
+        format!("+{text}")
+    }
 }
 
 fn state_label(state: MachineState) -> &'static str {
@@ -180,9 +184,16 @@ mod tests {
     #[test]
     fn temps_format_with_one_decimal_and_a_sign() {
         assert_eq!(fmt_temp(1400), "+14.0C");
-        assert_eq!(fmt_temp(-405), "-4.0C");
         assert_eq!(fmt_temp(-4000), "-40.0C");
         assert_eq!(fmt_temp(0), "+0.0C");
+    }
+
+    // The orders terminal shows the same readings; both screens must agree.
+    #[test]
+    fn temps_round_like_the_orders_terminal() {
+        assert_eq!(fmt_temp(1455), "+14.6C");
+        assert_eq!(fmt_temp(-405), "-4.1C");
+        assert_eq!(fmt_temp(-4), "+0.0C");
     }
 
     #[test]

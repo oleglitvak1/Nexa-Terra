@@ -56,7 +56,6 @@ pub struct OrderTuning {
     pub power_margin_percent: u8,
 }
 
-/// The Standing Orders content file.
 /// How the terminal's card builder steps thresholds and priorities. Content only:
 /// unlike [`OrderTuning`] it isn't stored in saves, since cards already hold their values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +70,7 @@ pub struct EditorTuning {
     pub temp_max_centi_c: i32,
 }
 
+/// The Standing Orders content file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrdersDef {
     pub tuning: OrderTuning,
