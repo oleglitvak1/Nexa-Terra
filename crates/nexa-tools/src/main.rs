@@ -10,8 +10,11 @@ use nexa_sim::orders::OrdersDef;
 use nexa_sim::{SimEvent, World};
 use nexa_types::TICKS_PER_SOL;
 
+/// The vertical slice's length: the scrubbers' filter life.
+const DEFAULT_SOLS: u64 = 45;
+
 fn main() {
-    let mut sols: u64 = 45;
+    let mut sols = DEFAULT_SOLS;
     let mut preset: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -95,7 +98,7 @@ fn main() {
                 m.id().as_str(),
                 machine.state().label(),
                 m.temp_centi_c(),
-                machine.wear_bp() / 100
+                machine.wear_percent()
             );
         }
     }

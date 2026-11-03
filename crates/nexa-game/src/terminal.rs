@@ -24,6 +24,15 @@ impl Ink {
     }
 }
 
+/// Font size `measure_text` probes at; any size works, glyph width scales linearly.
+const PROBE_FONT_SIZE: u16 = 100;
+/// Share of a cell's width a glyph fills, leaving a sliver between characters.
+const GLYPH_WIDTH_FILL: f32 = 0.92;
+/// Cap on font size as a share of cell height, so rows don't overlap.
+const GLYPH_HEIGHT_MAX: f32 = 1.05;
+/// Where the text baseline sits, as a share of the cell's height from its top.
+const BASELINE: f32 = 0.8;
+
 /// Screen background: a warm near-black.
 pub const BACKGROUND: Color = Color::new(0.06, 0.04, 0.02, 1.0);
 
@@ -123,8 +132,9 @@ impl Terminal {
         let cell_h = screen_height() / self.rows as f32;
         // Size the font so a glyph fills most of a cell's width, without
         // growing taller than the cell.
-        let probe = measure_text("M", None, 100, 1.0).width.max(1.0);
-        let font_size = (100.0 * cell_w * 0.92 / probe).min(cell_h * 1.05) as u16;
+        let probe = measure_text("M", None, PROBE_FONT_SIZE, 1.0).width.max(1.0);
+        let font_size = (f32::from(PROBE_FONT_SIZE) * cell_w * GLYPH_WIDTH_FILL / probe)
+            .min(cell_h * GLYPH_HEIGHT_MAX) as u16;
         let mut buf = [0u8; 4];
         for row in 0..self.rows {
             for col in 0..self.cols {
@@ -133,7 +143,7 @@ impl Terminal {
                     continue;
                 }
                 let x = col as f32 * cell_w;
-                let y = row as f32 * cell_h + cell_h * 0.8;
+                let y = row as f32 * cell_h + cell_h * BASELINE;
                 draw_text_ex(
                     cell.ch.encode_utf8(&mut buf),
                     x,

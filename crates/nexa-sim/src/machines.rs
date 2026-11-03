@@ -137,6 +137,8 @@ pub struct Machine {
 /// Wear at which a machine fails: 100.00%.
 pub const MAX_WEAR_BP: u16 = 10_000;
 
+const BP_PER_PERCENT: u16 = 100;
+
 /// Unvalidated wire form of [`Machine`]; serde checks it via `TryFrom`.
 #[derive(Deserialize)]
 struct RawMachine {
@@ -201,6 +203,11 @@ impl Machine {
 
     pub fn wear_bp(&self) -> u16 {
         self.wear_bp
+    }
+
+    /// Wear in whole percent, rounded down.
+    pub fn wear_percent(&self) -> u16 {
+        self.wear_bp / BP_PER_PERCENT
     }
 
     pub fn tolerance(&self) -> ToleranceBand {
@@ -373,6 +380,12 @@ mod tests {
         m.repair();
         // Still below the band, so it's freezing again, with fresh wear.
         assert_eq!((m.state(), m.wear_bp()), (MachineState::Freeze, 0));
+    }
+
+    #[test]
+    fn wear_percent_rounds_down() {
+        let m = Machine::new(band(), 0).with_wear(4599);
+        assert_eq!(m.wear_percent(), 45);
     }
 
     #[test]

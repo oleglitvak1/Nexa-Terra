@@ -11,6 +11,8 @@ pub const MAP_COL: usize = 2;
 pub const MAP_ROW: usize = 2;
 pub const PANEL_COL: usize = 36;
 const POWER_BAR_WIDTH: usize = 20;
+/// Below this the grid power bar draws bright as a warning.
+const LOW_POWER_PERCENT: usize = 25;
 
 /// "+14.0C": the orders terminal's rounding, with an explicit sign so the column lines up.
 pub fn fmt_temp(centi_c: i32) -> String {
@@ -105,7 +107,11 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
         "#".repeat(filled),
         "-".repeat(POWER_BAR_WIDTH - filled)
     );
-    let bar_ink = if pct < 25 { Ink::Bright } else { Ink::Amber };
+    let bar_ink = if pct < LOW_POWER_PERCENT {
+        Ink::Bright
+    } else {
+        Ink::Amber
+    };
     t.put_str(PANEL_COL, top, &bar, bar_ink);
 
     let header = format!(
@@ -119,7 +125,7 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
             Some(machine) => (
                 machine.state().label().to_uppercase(),
                 fmt_temp(m.temp_centi_c()),
-                format!("{}%", machine.wear_bp() / 100),
+                format!("{}%", machine.wear_percent()),
             ),
             None => ("--".into(), String::new(), "--".into()),
         };
