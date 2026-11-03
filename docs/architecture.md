@@ -253,6 +253,8 @@ All content is RON (Rusty Object Notation) loaded through `serde`, validated at 
 
 **Saves.** A save is the serialized `World` plus `SimRng` state, written through the `Storage` trait. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
 
+A save also keeps the content it was made with: each module's `ModuleDef` and the Standing Orders tuning (terminal memory, re-arm margins). So a save replays the same after a balance change, and edits to `content/` reach only new games. `format_version` and `migrate()` aren't built yet; when they are, `migrate()` is where a deliberate rebalance reaches old saves.
+
 **Validation.** A `nexa-sim` test loads every content file and checks cross-references (a machine's required part exists, every hazard option has a valid check). Broken content fails the build, not the playtest.
 
 ## Testing strategy and AI-coding workflow
