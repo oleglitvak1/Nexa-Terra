@@ -395,10 +395,6 @@ impl Colony {
         &self.grid
     }
 
-    pub fn ambient_centi_c(&self) -> i32 {
-        self.ambient_centi_c
-    }
-
     pub fn modules(&self) -> &[Module] {
         &self.modules
     }
