@@ -102,7 +102,7 @@ impl std::fmt::Display for ContentError {
             ContentError::Parse(e) => write!(f, "colony content doesn't parse: {e}"),
             ContentError::Layout(e) => write!(f, "colony layout: {e}"),
             ContentError::HeatLossOutOfRange(p) => {
-                write!(f, "heat_loss_percent {p} is above 100")
+                write!(f, "heat_loss_percent {p} is above {MAX_HEAT_LOSS_PERCENT}")
             }
             ContentError::DuplicateId(id) => write!(f, "module id {id} is used twice"),
             ContentError::GlyphTaken { module, glyph } => {

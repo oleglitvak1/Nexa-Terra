@@ -36,7 +36,9 @@ pub enum SaveError {
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SaveError::HeatLossOutOfRange(p) => write!(f, "heat_loss_percent {p} is above 100"),
+            SaveError::HeatLossOutOfRange(p) => {
+                write!(f, "heat_loss_percent {p} is above {MAX_HEAT_LOSS_PERCENT}")
+            }
             SaveError::BadGrid => write!(f, "grid tiles don't match its size or modules"),
             SaveError::NetworksChanged(id) => {
                 write!(f, "module {id}'s networks don't match the grid")

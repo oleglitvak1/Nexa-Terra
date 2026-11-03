@@ -10,9 +10,10 @@ use macroquad::prelude::KeyCode;
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::orders::{
     format_centi_c, Action, EditorTuning, OrderError, OrdersDef, StandingOrder, Trigger,
-    CENTI_PER_DEGREE, POWER_PERCENT,
+    POWER_PERCENT,
 };
 use nexa_sim::World;
+use nexa_types::{ModuleId, CENTI_PER_DEGREE};
 
 const LEFT: usize = 2;
 const TOP: usize = 3;
@@ -33,22 +34,37 @@ const PICK_HELP: &str = "[UP/DOWN] SELECT   [ENTER] CHOOSE   [ESC] BACK";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TriggerKind {
     PowerBelow,
-    TempBelow,
-    TempAbove,
+    /// Watches a module, so a module picker comes before the threshold.
+    Temp(TempSide),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TempSide {
+    Below,
+    Above,
 }
 
 const TRIGGER_KINDS: [TriggerKind; 3] = [
     TriggerKind::PowerBelow,
-    TriggerKind::TempBelow,
-    TriggerKind::TempAbove,
+    TriggerKind::Temp(TempSide::Below),
+    TriggerKind::Temp(TempSide::Above),
 ];
 
 impl TriggerKind {
     fn label(self) -> &'static str {
         match self {
             TriggerKind::PowerBelow => "grid.power < N%",
-            TriggerKind::TempBelow => "MODULE.temp < N",
-            TriggerKind::TempAbove => "MODULE.temp > N",
+            TriggerKind::Temp(TempSide::Below) => "MODULE.temp < N",
+            TriggerKind::Temp(TempSide::Above) => "MODULE.temp > N",
+        }
+    }
+}
+
+impl TempSide {
+    fn build(self, module: ModuleId, centi_c: i32) -> Trigger {
+        match self {
+            TempSide::Below => Trigger::TempBelow { module, centi_c },
+            TempSide::Above => Trigger::TempAbove { module, centi_c },
         }
     }
 }
@@ -126,7 +142,7 @@ fn targets(colony: &Colony, kind: ActionKind) -> Vec<&Module> {
 enum Step {
     Menu,
     PickTrigger(ListPicker),
-    PickWatched { above: bool, picker: ListPicker },
+    PickWatched(TempSide, ListPicker),
     SetThreshold(Trigger),
     PickAction(ListPicker),
     PickTarget(ActionKind, ListPicker),
@@ -245,15 +261,15 @@ impl OrdersEditor {
                 None => return,
             },
             Step::PickTrigger(picker) => trigger_key(key, picker, &tuning),
-            Step::PickWatched { above, picker } => watched_key(key, colony, above, picker, &tuning),
+            Step::PickWatched(side, picker) => watched_key(key, colony, side, picker, &tuning),
             Step::SetThreshold(trigger) => match threshold_key(key, trigger, &tuning) {
                 Threshold::Editing(trigger) => Step::SetThreshold(trigger),
-                Threshold::Done(Some(trigger)) => {
+                Threshold::Add(trigger) => {
                     order.triggers.push(trigger);
                     added.push(Part::Trigger);
                     Step::Menu
                 }
-                Threshold::Done(None) => Step::Menu,
+                Threshold::Cancel => Step::Menu,
             },
             Step::PickAction(picker) => action_key(key, picker),
             Step::PickTarget(kind, mut picker) => {
@@ -389,10 +405,7 @@ fn trigger_key(key: KeyCode, mut picker: ListPicker, tuning: &EditorTuning) -> S
             TriggerKind::PowerBelow => {
                 Step::SetThreshold(Trigger::PowerBelowPercent(tuning.power_start_percent))
             }
-            TriggerKind::TempBelow | TriggerKind::TempAbove => Step::PickWatched {
-                above: TRIGGER_KINDS[i] == TriggerKind::TempAbove,
-                picker: ListPicker::default(),
-            },
+            TriggerKind::Temp(side) => Step::PickWatched(side, ListPicker::default()),
         },
         Pick::Back => Step::Menu,
         Pick::Pending => Step::PickTrigger(picker),
@@ -402,7 +415,7 @@ fn trigger_key(key: KeyCode, mut picker: ListPicker, tuning: &EditorTuning) -> S
 fn watched_key(
     key: KeyCode,
     colony: &Colony,
-    above: bool,
+    side: TempSide,
     mut picker: ListPicker,
     tuning: &EditorTuning,
 ) -> Step {
@@ -410,40 +423,32 @@ fn watched_key(
     match picker.handle(key, modules.len()) {
         Pick::Chosen(i) => {
             let m = modules[i];
-            let module = m.id().clone();
             // Start from the current reading, rounded down to a whole degree.
             let centi_c = (m.temp_centi_c().div_euclid(CENTI_PER_DEGREE) * CENTI_PER_DEGREE)
                 .clamp(tuning.temp_min_centi_c, tuning.temp_max_centi_c);
-            Step::SetThreshold(if above {
-                Trigger::TempAbove { module, centi_c }
-            } else {
-                Trigger::TempBelow { module, centi_c }
-            })
+            Step::SetThreshold(side.build(m.id().clone(), centi_c))
         }
-        Pick::Back => {
-            let kind = if above {
-                TriggerKind::TempAbove
-            } else {
-                TriggerKind::TempBelow
-            };
-            Step::PickTrigger(ListPicker::at(slot_of(&TRIGGER_KINDS, &kind)))
-        }
-        Pick::Pending => Step::PickWatched { above, picker },
+        Pick::Back => Step::PickTrigger(ListPicker::at(slot_of(
+            &TRIGGER_KINDS,
+            &TriggerKind::Temp(side),
+        ))),
+        Pick::Pending => Step::PickWatched(side, picker),
     }
 }
 
-/// A threshold being keyed in, or finished: added to the card, or cancelled.
+/// A threshold being keyed in, or finished.
 enum Threshold {
     Editing(Trigger),
-    Done(Option<Trigger>),
+    Add(Trigger),
+    Cancel,
 }
 
 fn threshold_key(key: KeyCode, mut trigger: Trigger, tuning: &EditorTuning) -> Threshold {
     match key {
         KeyCode::Right | KeyCode::Up => nudge(&mut trigger, true, tuning),
         KeyCode::Left | KeyCode::Down => nudge(&mut trigger, false, tuning),
-        KeyCode::Enter | KeyCode::KpEnter => return Threshold::Done(Some(trigger)),
-        KeyCode::Escape | KeyCode::Backspace => return Threshold::Done(None),
+        KeyCode::Enter | KeyCode::KpEnter => return Threshold::Add(trigger),
+        KeyCode::Escape | KeyCode::Backspace => return Threshold::Cancel,
         _ => {}
     }
     Threshold::Editing(trigger)
@@ -499,7 +504,7 @@ fn draw_draft(
             picker.draw(t, LEFT, row + 2, height, &items);
             PICK_HELP
         }
-        Step::PickWatched { picker, .. } => {
+        Step::PickWatched(_, picker) => {
             t.put_str(LEFT, row, "ADD TRIGGER: WHICH MODULE?", Ink::Bright);
             let items: Vec<String> = watched(colony)
                 .iter()

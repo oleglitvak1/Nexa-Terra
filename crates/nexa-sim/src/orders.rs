@@ -7,7 +7,7 @@
 
 use crate::colony::Colony;
 use crate::SimEvent;
-use nexa_types::{Command, ModuleId};
+use nexa_types::{Command, ModuleId, CENTI_PER_DEGREE};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -15,6 +15,9 @@ use std::sync::OnceLock;
 
 /// Power thresholds a card accepts: outside this a card would never fire, or never re-arm.
 pub const POWER_PERCENT: RangeInclusive<u8> = 1..=100;
+
+/// The grid can't charge past full, so a re-arm point above this would never be reached.
+const FULL_CHARGE_PERCENT: u16 = 100;
 
 /// A condition a card watches. Water and emergency candles come with those systems.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,7 +182,7 @@ impl Trigger {
         match self {
             Trigger::PowerBelowPercent(p) => {
                 let rearm = (u16::from(*p) + u16::from(tuning.power_margin_percent))
-                    .min(u16::from(*POWER_PERCENT.end()));
+                    .min(FULL_CHARGE_PERCENT);
                 u16::from(colony.power_percent()) >= rearm
             }
             Trigger::TempBelow { module, centi_c } => temp(colony, module).is_some_and(|t| {
@@ -467,14 +470,17 @@ fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
     colony.module(id).map(|m| m.temp_centi_c())
 }
 
-/// Temperatures are stored in hundredths of a degree.
-pub const CENTI_PER_DEGREE: i32 = 100;
-
 /// Centi-degrees as degrees C with one decimal place, rounding half away from zero.
 pub fn format_centi_c(centi_c: i32) -> String {
-    let deci = (i64::from(centi_c).abs() + 5) / 10;
-    let sign = if centi_c < 0 && deci != 0 { "-" } else { "" };
-    format!("{sign}{}.{}C", deci / 10, deci % 10)
+    const TENTHS_PER_DEGREE: i64 = 10;
+    let centi_per_tenth = i64::from(CENTI_PER_DEGREE) / TENTHS_PER_DEGREE;
+    let tenths = (i64::from(centi_c).abs() + centi_per_tenth / 2) / centi_per_tenth;
+    let sign = if centi_c < 0 && tenths != 0 { "-" } else { "" };
+    format!(
+        "{sign}{}.{}C",
+        tenths / TENTHS_PER_DEGREE,
+        tenths % TENTHS_PER_DEGREE
+    )
 }
 
 #[cfg(test)]

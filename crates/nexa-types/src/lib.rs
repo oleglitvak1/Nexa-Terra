@@ -12,6 +12,9 @@ pub const HOURS_PER_SOL: u64 = 26;
 /// One simulation tick is one planetary hour.
 pub const TICKS_PER_SOL: u64 = HOURS_PER_SOL;
 
+/// Temperatures are whole hundredths of a degree C everywhere (`*_centi_c`).
+pub const CENTI_PER_DEGREE: i32 = 100;
+
 /// Absolute simulation time, counted in ticks (planetary hours) since landfall.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
