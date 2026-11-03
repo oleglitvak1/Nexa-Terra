@@ -26,22 +26,75 @@ pub enum MachineState {
 }
 
 /// The temperature range, in centi-degrees Celsius, where a machine runs at 0% wear.
+///
+/// Fields are private so min <= max holds however a band is built, including
+/// when it is deserialized from content or a save.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawToleranceBand")]
 pub struct ToleranceBand {
+    min_centi_c: i32,
+    max_centi_c: i32,
+}
+
+/// Unvalidated wire form of [`ToleranceBand`]; serde checks it via `TryFrom`.
+#[derive(Deserialize)]
+struct RawToleranceBand {
+    min_centi_c: i32,
+    max_centi_c: i32,
+}
+
+/// A tolerance band whose min is above its max.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvertedBand {
     pub min_centi_c: i32,
     pub max_centi_c: i32,
 }
 
+impl std::fmt::Display for InvertedBand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "tolerance band min ({}) must not exceed max ({})",
+            self.min_centi_c, self.max_centi_c
+        )
+    }
+}
+
+impl std::error::Error for InvertedBand {}
+
+impl TryFrom<RawToleranceBand> for ToleranceBand {
+    type Error = InvertedBand;
+
+    fn try_from(raw: RawToleranceBand) -> Result<Self, Self::Error> {
+        Self::try_new(raw.min_centi_c, raw.max_centi_c)
+    }
+}
+
 impl ToleranceBand {
+    /// Panics on an inverted band; for bands defined in code. Data goes through [`Self::try_new`].
     pub fn new(min_centi_c: i32, max_centi_c: i32) -> Self {
-        assert!(
-            min_centi_c <= max_centi_c,
-            "tolerance band min must not exceed max"
-        );
-        Self {
+        Self::try_new(min_centi_c, max_centi_c).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    pub fn try_new(min_centi_c: i32, max_centi_c: i32) -> Result<Self, InvertedBand> {
+        if min_centi_c > max_centi_c {
+            return Err(InvertedBand {
+                min_centi_c,
+                max_centi_c,
+            });
+        }
+        Ok(Self {
             min_centi_c,
             max_centi_c,
-        }
+        })
+    }
+
+    pub fn min_centi_c(&self) -> i32 {
+        self.min_centi_c
+    }
+
+    pub fn max_centi_c(&self) -> i32 {
+        self.max_centi_c
     }
 
     /// Classify a temperature against this band. Bounds are inclusive.
@@ -57,10 +110,13 @@ impl ToleranceBand {
 }
 
 /// A single machine: its tolerance band, current temperature and resulting state.
+///
+/// Fields are private so `state` can't drift from the temperature: every
+/// temperature change goes through [`Machine::set_temperature`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Machine {
-    pub tolerance: ToleranceBand,
-    pub temp_centi_c: i32,
+    tolerance: ToleranceBand,
+    temp_centi_c: i32,
     state: MachineState,
 }
 
@@ -73,6 +129,14 @@ impl Machine {
             temp_centi_c,
             state,
         }
+    }
+
+    pub fn tolerance(&self) -> ToleranceBand {
+        self.tolerance
+    }
+
+    pub fn temp_centi_c(&self) -> i32 {
+        self.temp_centi_c
     }
 
     pub fn state(&self) -> MachineState {
@@ -116,8 +180,8 @@ mod tests {
     #[test]
     fn classify_bounds_are_inclusive_nominal() {
         let b = band();
-        assert_eq!(b.classify(b.min_centi_c), MachineState::Nominal);
-        assert_eq!(b.classify(b.max_centi_c), MachineState::Nominal);
+        assert_eq!(b.classify(b.min_centi_c()), MachineState::Nominal);
+        assert_eq!(b.classify(b.max_centi_c()), MachineState::Nominal);
     }
 
     #[test]
@@ -172,8 +236,32 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "min must not exceed max")]
+    #[should_panic(expected = "must not exceed max")]
     fn tolerance_band_rejects_inverted_bounds() {
         ToleranceBand::new(100, -100);
+    }
+
+    // Bands arrive from RON content and saves, so deserializing must enforce min <= max too.
+    #[test]
+    fn tolerance_band_deserialize_rejects_inverted_bounds() {
+        let parsed = ron::from_str::<ToleranceBand>("(min_centi_c: 100, max_centi_c: -100)");
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn tolerance_band_deserializes_valid_bounds() {
+        let parsed: ToleranceBand =
+            ron::from_str("(min_centi_c: -500, max_centi_c: 8000)").unwrap();
+        assert_eq!(parsed, band());
+    }
+
+    #[test]
+    fn failed_state_survives_a_save_round_trip() {
+        let mut m = Machine::new(band(), 0);
+        m.burnout();
+        let saved = ron::to_string(&m).unwrap();
+        let loaded: Machine = ron::from_str(&saved).unwrap();
+        assert_eq!(loaded, m);
+        assert_eq!(loaded.state(), MachineState::Burnout);
     }
 }

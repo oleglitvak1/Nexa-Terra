@@ -9,3 +9,6 @@ publish.workspace = true
 [dependencies]
 nexa-types.workspace = true
 serde.workspace = true
+
+[dev-dependencies]
+ron.workspace = true
