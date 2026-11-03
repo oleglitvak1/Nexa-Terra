@@ -16,7 +16,10 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--orders" => preset = args.next(),
+            "--orders" => match args.next() {
+                Some(name) => preset = Some(name),
+                None => usage("--orders needs a preset name"),
+            },
             _ => match arg.parse() {
                 Ok(n) => sols = n,
                 Err(_) => usage(&format!("unexpected argument {arg:?}")),

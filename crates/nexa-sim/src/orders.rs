@@ -89,6 +89,8 @@ pub enum OrderError {
     NoActions,
     UnknownModule(ModuleId),
     NotOnHeatLine(ModuleId),
+    /// A power trigger outside 1..=100 would never fire, or never re-arm.
+    PercentOutOfRange(u8),
     NoSuchSlot(usize),
 }
 
@@ -102,6 +104,7 @@ impl std::fmt::Display for OrderError {
             OrderError::NoActions => write!(f, "a card needs at least one action"),
             OrderError::UnknownModule(id) => write!(f, "no module named {id}"),
             OrderError::NotOnHeatLine(id) => write!(f, "{id} is not on a heat line"),
+            OrderError::PercentOutOfRange(p) => write!(f, "power must be 1-100%, not {p}%"),
             OrderError::NoSuchSlot(slot) => write!(f, "no card in slot {slot}"),
         }
     }
@@ -239,6 +242,13 @@ impl StandingOrder {
         if self.actions.is_empty() {
             return Err(OrderError::NoActions);
         }
+        for trigger in &self.triggers {
+            if let Trigger::PowerBelowPercent(p) = trigger {
+                if !(1..=100).contains(p) {
+                    return Err(OrderError::PercentOutOfRange(*p));
+                }
+            }
+        }
         for id in self.triggers.iter().filter_map(Trigger::module) {
             if colony.module(id).is_none() {
                 return Err(OrderError::UnknownModule(id.clone()));
@@ -370,7 +380,6 @@ impl Orders {
             if !card.order.triggers.iter().all(|t| t.holds(colony)) {
                 continue;
             }
-            card.armed = false;
             events.push(SimEvent::OrderFired {
                 slot,
                 order: card.order.clone(),
@@ -386,9 +395,11 @@ impl Orders {
                     });
                     continue;
                 }
-                taken.push(claim);
                 match colony.apply(&action.command()) {
-                    Ok(more) => events.extend(more),
+                    Ok(more) => {
+                        taken.push(claim);
+                        events.extend(more);
+                    }
                     Err(_) => events.push(SimEvent::OrderActionSkipped {
                         slot,
                         action: action.clone(),
@@ -396,6 +407,9 @@ impl Orders {
                     }),
                 }
             }
+            // A card that changed nothing stays armed and tries again next hour;
+            // otherwise a blocked card could wait forever for its trigger to clear.
+            card.armed = taken.is_empty();
             claimed.extend(taken);
         }
         events
@@ -606,6 +620,31 @@ mod tests {
     }
 
     #[test]
+    fn a_card_that_was_wholly_overridden_tries_again_next_hour() {
+        let mut colony = ash_plain();
+        let mut orders = Orders::default();
+        for (priority, to) in [(1, "hab_01"), (2, "hab_02")] {
+            orders
+                .add(
+                    card(
+                        priority,
+                        vec![always()],
+                        vec![Action::DivertHeat { to: id(to) }],
+                    ),
+                    &colony,
+                )
+                .unwrap();
+        }
+        assert_eq!(fired(&orders.evaluate(&mut colony)), vec![0, 1]);
+        // Card 2 did nothing, so it stays armed and gets the heat line now.
+        let events = orders.evaluate(&mut colony);
+        assert_eq!(fired(&events), vec![1]);
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, SimEvent::OrderActionSkipped { .. })));
+    }
+
+    #[test]
     fn a_card_can_steer_the_same_thing_twice() {
         // Claims block lower-priority cards, not the card's own later actions.
         let mut colony = ash_plain();
@@ -662,7 +701,7 @@ mod tests {
             centi_c: 0,
         };
         assert_eq!(
-            orders.add(card(1, vec![ghost], activate), &colony),
+            orders.add(card(1, vec![ghost], activate.clone()), &colony),
             Err(OrderError::UnknownModule(id("ghost")))
         );
         assert_eq!(
@@ -678,6 +717,16 @@ mod tests {
             ),
             Err(OrderError::NotOnHeatLine(id("scrubber_01")))
         );
+        // 0% can never hold; past 100% always holds and never re-arms.
+        for p in [0, 101] {
+            assert_eq!(
+                orders.add(
+                    card(1, vec![Trigger::PowerBelowPercent(p)], activate.clone()),
+                    &colony
+                ),
+                Err(OrderError::PercentOutOfRange(p))
+            );
+        }
         assert_eq!(orders.remove(0), Err(OrderError::NoSuchSlot(0)));
         assert!(orders.is_empty());
     }
