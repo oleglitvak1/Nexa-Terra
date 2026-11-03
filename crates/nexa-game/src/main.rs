@@ -125,16 +125,14 @@ impl App {
                 } else {
                     format!("RUNNING {}x", self.speed)
                 };
-                t.put_str(
-                    colony_view::PANEL_COL,
-                    1,
-                    &format!(
-                        "SOL {:03}  HOUR {:02}  {status}",
-                        now.sol(),
-                        now.hour_of_sol()
-                    ),
-                    Ink::Amber,
+                // Right-aligned inside the frame so it never runs into the title.
+                let clock = format!(
+                    "SOL {:03}  HOUR {:02}  {status}",
+                    now.sol(),
+                    now.hour_of_sol()
                 );
+                let clock_col = COLS.saturating_sub(2 + clock.chars().count());
+                t.put_str(clock_col, 1, &clock, Ink::Amber);
                 colony_view::draw_map(t, &self.world.colony, blink);
                 let next = colony_view::draw_status(t, &self.world.colony, colony_view::MAP_ROW);
                 colony_view::draw_log(t, self.log.iter(), next + 1, ROWS - 2);
