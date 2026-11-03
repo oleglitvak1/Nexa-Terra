@@ -8,9 +8,10 @@ use crate::terminal::{Ink, Terminal};
 use crate::ui::{wrap, ListPicker, Pick};
 use macroquad::prelude::KeyCode;
 use nexa_sim::colony::{Colony, Module};
-use nexa_sim::orders::{format_centi_c, Action, OrderError, StandingOrder, Trigger};
+use nexa_sim::orders::{
+    format_centi_c, Action, EditorTuning, OrderError, OrdersDef, StandingOrder, Trigger,
+};
 use nexa_sim::World;
-use std::ops::RangeInclusive;
 
 const LEFT: usize = 2;
 const TOP: usize = 3;
@@ -18,13 +19,12 @@ const TOP: usize = 3;
 const WIDTH: usize = 76;
 /// "> 1 P1 " in front of each card in the list.
 const CARD_INDENT: usize = 7;
+/// Priority 1 runs first, so it's where every new card starts.
+const FIRST_PRIORITY: u8 = 1;
 
-const PRIORITY_RANGE: RangeInclusive<u8> = 1..=9;
-/// Starting threshold for a new power trigger.
-const POWER_START: u8 = 25;
-const POWER_STEP: u8 = 5;
-const TEMP_STEP: i32 = 50;
-const TEMP_RANGE: RangeInclusive<i32> = -5000..=10000;
+fn tuning() -> EditorTuning {
+    OrdersDef::shipped().editor
+}
 
 const TRIGGER_KINDS: [&str; 3] = ["grid.power < N%", "MODULE.temp < N", "MODULE.temp > N"];
 
@@ -105,10 +105,21 @@ enum Step {
     PickTarget(ActionKind, ListPicker),
 }
 
+/// A part of a draft card, kept in the order added so Backspace undoes the latest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Trigger,
+    Action,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Mode {
     List,
-    Draft { order: StandingOrder, step: Step },
+    Draft {
+        order: StandingOrder,
+        step: Step,
+        added: Vec<Part>,
+    },
 }
 
 pub struct OrdersEditor {
@@ -116,6 +127,8 @@ pub struct OrdersEditor {
     list: ListPicker,
     /// The last thing the terminal has to say: a stored card or why it was refused.
     message: Option<String>,
+    /// The slot a first D press asked to delete; a second D deletes it.
+    confirm_delete: Option<usize>,
 }
 
 impl OrdersEditor {
@@ -124,19 +137,29 @@ impl OrdersEditor {
             mode: Mode::List,
             list: ListPicker::default(),
             message: None,
+            confirm_delete: None,
         }
     }
 
     pub fn handle(&mut self, key: KeyCode, world: &mut World) -> Outcome {
         match std::mem::replace(&mut self.mode, Mode::List) {
             Mode::List => return self.handle_list(key, world),
-            Mode::Draft { order, step } => self.handle_draft(key, world, order, step),
+            Mode::Draft { order, step, added } => self.handle_draft(key, world, order, step, added),
         }
         Outcome::Stay
     }
 
     fn handle_list(&mut self, key: KeyCode, world: &mut World) -> Outcome {
         let count = world.orders.len();
+        let confirming = self.confirm_delete.take();
+        let delete = matches!(key, KeyCode::D | KeyCode::Delete);
+        if confirming.is_some() && !delete {
+            self.message = None;
+            // Esc only cancels the delete; it takes a second Esc to leave.
+            if key == KeyCode::Escape {
+                return Outcome::Stay;
+            }
+        }
         match key {
             KeyCode::N => {
                 let memory = world.orders.tuning().memory;
@@ -148,19 +171,27 @@ impl OrdersEditor {
                         order: StandingOrder {
                             triggers: Vec::new(),
                             actions: Vec::new(),
-                            priority: *PRIORITY_RANGE.start(),
+                            priority: FIRST_PRIORITY,
                         },
                         step: Step::Menu,
+                        added: Vec::new(),
                     };
                 }
             }
-            KeyCode::D | KeyCode::Delete => {
+            _ if delete => {
                 let slot = self.list.cursor();
-                if world.remove_order(slot).is_ok() {
-                    self.message = Some(format!("CARD {} DELETED", slot + 1));
-                    self.list.clamp(world.orders.len());
+                if confirming == Some(slot) {
+                    if world.remove_order(slot).is_ok() {
+                        self.message = Some(format!("CARD {} DELETED", slot + 1));
+                        self.list.clamp(world.orders.len());
+                    }
+                } else if slot < count {
+                    self.confirm_delete = Some(slot);
+                    self.message = Some(format!("DELETE CARD {}? [D] AGAIN TO CONFIRM", slot + 1));
                 }
             }
+            // Backspace is undo in the builder; on the list it must not close the terminal.
+            KeyCode::Backspace => {}
             _ => {
                 if self.list.handle(key, count) == Pick::Back {
                     return Outcome::Close;
@@ -176,26 +207,30 @@ impl OrdersEditor {
         world: &mut World,
         mut order: StandingOrder,
         step: Step,
+        mut added: Vec<Part>,
     ) {
+        let tuning = tuning();
         let step = match step {
             Step::Menu => match key {
                 KeyCode::T => Step::PickTrigger(ListPicker::default()),
                 KeyCode::A => Step::PickAction(ListPicker::default()),
                 KeyCode::Left => {
-                    order.priority = order
-                        .priority
-                        .saturating_sub(1)
-                        .max(*PRIORITY_RANGE.start());
+                    order.priority = order.priority.saturating_sub(1).max(FIRST_PRIORITY);
                     Step::Menu
                 }
                 KeyCode::Right => {
-                    order.priority = order.priority.saturating_add(1).min(*PRIORITY_RANGE.end());
+                    order.priority = order.priority.saturating_add(1).min(tuning.priority_max);
                     Step::Menu
                 }
                 KeyCode::Backspace => {
-                    // Undo the most recent part: actions are always added after triggers.
-                    if order.actions.pop().is_none() {
-                        order.triggers.pop();
+                    match added.pop() {
+                        Some(Part::Trigger) => {
+                            order.triggers.pop();
+                        }
+                        Some(Part::Action) => {
+                            order.actions.pop();
+                        }
+                        None => {}
                     }
                     Step::Menu
                 }
@@ -217,7 +252,9 @@ impl OrdersEditor {
                 _ => Step::Menu,
             },
             Step::PickTrigger(mut picker) => match picker.handle(key, TRIGGER_KINDS.len()) {
-                Pick::Chosen(0) => Step::SetThreshold(Trigger::PowerBelowPercent(POWER_START)),
+                Pick::Chosen(0) => {
+                    Step::SetThreshold(Trigger::PowerBelowPercent(tuning.power_start_percent))
+                }
                 Pick::Chosen(i) => Step::PickWatched {
                     above: i == 2,
                     picker: ListPicker::default(),
@@ -233,7 +270,7 @@ impl OrdersEditor {
                         let module = m.id().clone();
                         // Start from the current reading, rounded down to a whole degree.
                         let centi_c = (m.temp_centi_c().div_euclid(100) * 100)
-                            .clamp(*TEMP_RANGE.start(), *TEMP_RANGE.end());
+                            .clamp(tuning.temp_min_centi_c, tuning.temp_max_centi_c);
                         Step::SetThreshold(if above {
                             Trigger::TempAbove { module, centi_c }
                         } else {
@@ -246,15 +283,16 @@ impl OrdersEditor {
             }
             Step::SetThreshold(mut trigger) => match key {
                 KeyCode::Right | KeyCode::Up => {
-                    nudge(&mut trigger, true);
+                    nudge(&mut trigger, true, &tuning);
                     Step::SetThreshold(trigger)
                 }
                 KeyCode::Left | KeyCode::Down => {
-                    nudge(&mut trigger, false);
+                    nudge(&mut trigger, false, &tuning);
                     Step::SetThreshold(trigger)
                 }
                 KeyCode::Enter | KeyCode::KpEnter => {
                     order.triggers.push(trigger);
+                    added.push(Part::Trigger);
                     Step::Menu
                 }
                 KeyCode::Escape | KeyCode::Backspace => Step::Menu,
@@ -270,6 +308,7 @@ impl OrdersEditor {
                 match picker.handle(key, modules.len()) {
                     Pick::Chosen(i) => {
                         order.actions.push(kind.build(modules[i]));
+                        added.push(Part::Action);
                         Step::Menu
                     }
                     Pick::Back => {
@@ -280,7 +319,7 @@ impl OrdersEditor {
                 }
             }
         };
-        self.mode = Mode::Draft { order, step };
+        self.mode = Mode::Draft { order, step, added };
     }
 
     fn say(&mut self, error: OrderError) {
@@ -295,7 +334,7 @@ impl OrdersEditor {
                 self.draw_list(t, world, message_row);
                 "[UP/DOWN] SELECT   [N] NEW CARD   [D] DELETE   [ESC] BACK TO COLONY"
             }
-            Mode::Draft { order, step } => draw_draft(t, world, order, step, message_row),
+            Mode::Draft { order, step, .. } => draw_draft(t, world, order, step, message_row),
         };
         if let Some(message) = &self.message {
             t.put_str(LEFT, message_row, message, Ink::Bright);
@@ -317,19 +356,26 @@ impl OrdersEditor {
             );
             return;
         }
+        let cards: Vec<Vec<String>> = orders
+            .iter()
+            .map(|o| wrap(&o.render(), WIDTH - CARD_INDENT))
+            .collect();
+        let cursor = self.list.cursor();
+        // Scroll by whole cards until the selected one fits above `bottom`.
+        let height = bottom.saturating_sub(TOP + 2);
+        let mut first = 0;
+        while first < cursor && cards[first..=cursor].iter().map(Vec::len).sum::<usize>() > height {
+            first += 1;
+        }
         let mut row = TOP + 2;
-        for (slot, order) in orders.iter().enumerate() {
-            let selected = slot == self.list.cursor();
-            let (mark, ink) = if selected {
+        for (slot, (order, lines)) in orders.iter().zip(&cards).enumerate().skip(first) {
+            let (mark, ink) = if slot == cursor {
                 ('>', Ink::Bright)
             } else {
                 (' ', Ink::Amber)
             };
             let head = format!("{mark} {} P{}", slot + 1, order.priority);
-            for (i, line) in wrap(&order.render(), WIDTH - CARD_INDENT)
-                .iter()
-                .enumerate()
-            {
+            for (i, line) in lines.iter().enumerate() {
                 if row >= bottom {
                     return;
                 }
@@ -354,8 +400,19 @@ fn draw_draft(
     let priority = format!("PRIORITY {}", order.priority);
     t.put_str(LEFT + WIDTH - priority.len(), TOP, &priority, Ink::Amber);
     let mut row = TOP + 2;
-    for line in wrap(&draft_text(order), WIDTH) {
-        t.put_str(LEFT, row, &line, Ink::Amber);
+    // Leave a blank row, the step's label, a blank row and one list row above `bottom`;
+    // a card too long for that shows its latest parts, the ones being edited.
+    let room = bottom.saturating_sub(row + 4).max(1);
+    let lines = wrap(&draft_text(order), WIDTH);
+    let skip = if lines.len() > room {
+        t.put_str(LEFT, row, "...", Ink::Dim);
+        row += 1;
+        lines.len() - room + 1
+    } else {
+        0
+    };
+    for line in &lines[skip..] {
+        t.put_str(LEFT, row, line, Ink::Amber);
         row += 1;
     }
     row += 1;
@@ -424,18 +481,24 @@ fn draft_text(order: &StandingOrder) -> String {
     )
 }
 
-fn nudge(trigger: &mut Trigger, up: bool) {
+/// Power moves in whole steps, but by 1 below the first step so every value the sim
+/// accepts (1 to 100%) can be keyed in.
+fn nudge(trigger: &mut Trigger, up: bool, tuning: &EditorTuning) {
     match trigger {
         Trigger::PowerBelowPercent(p) => {
-            *p = if up {
-                p.saturating_add(POWER_STEP).min(100)
-            } else {
-                p.saturating_sub(POWER_STEP).max(POWER_STEP)
-            };
+            let step = tuning.power_step_percent;
+            *p = match (up, *p) {
+                (true, p) if p < step => p + 1,
+                (true, p) => p.saturating_add(step),
+                (false, p) if p <= step => p.saturating_sub(1),
+                (false, p) => p - step,
+            }
+            .clamp(1, 100);
         }
         Trigger::TempBelow { centi_c, .. } | Trigger::TempAbove { centi_c, .. } => {
-            let step = if up { TEMP_STEP } else { -TEMP_STEP };
-            *centi_c = (*centi_c + step).clamp(*TEMP_RANGE.start(), *TEMP_RANGE.end());
+            let step = tuning.temp_step_centi_c;
+            let step = if up { step } else { -step };
+            *centi_c = (*centi_c + step).clamp(tuning.temp_min_centi_c, tuning.temp_max_centi_c);
         }
     }
 }
@@ -543,18 +606,20 @@ mod tests {
 
     #[test]
     fn thresholds_stay_in_range() {
-        let mut power = Trigger::PowerBelowPercent(POWER_STEP);
-        nudge(&mut power, false);
-        assert_eq!(power, Trigger::PowerBelowPercent(POWER_STEP));
+        let tuning = tuning();
+        let mut power = Trigger::PowerBelowPercent(1);
+        nudge(&mut power, false, &tuning);
+        assert_eq!(power, Trigger::PowerBelowPercent(1));
         let mut power = Trigger::PowerBelowPercent(100);
-        nudge(&mut power, true);
+        nudge(&mut power, true, &tuning);
         assert_eq!(power, Trigger::PowerBelowPercent(100));
+        let max = tuning.temp_max_centi_c;
         let mut temp = Trigger::TempAbove {
             module: id("hab_01"),
-            centi_c: *TEMP_RANGE.end(),
+            centi_c: max,
         };
-        nudge(&mut temp, true);
-        assert!(matches!(temp, Trigger::TempAbove { centi_c, .. } if centi_c == *TEMP_RANGE.end()));
+        nudge(&mut temp, true, &tuning);
+        assert!(matches!(temp, Trigger::TempAbove { centi_c, .. } if centi_c == max));
     }
 
     #[test]
@@ -609,7 +674,7 @@ mod tests {
         let Mode::Draft { order, .. } = &editor.mode else {
             panic!("draft closed");
         };
-        assert_eq!(order.priority, *PRIORITY_RANGE.end());
+        assert_eq!(order.priority, tuning().priority_max);
     }
 
     fn with_caretaker() -> World {
@@ -625,7 +690,11 @@ mod tests {
         let mut world = with_caretaker();
         let mut editor = OrdersEditor::new();
         let last = world.orders.get(2).unwrap().clone();
-        press(&mut editor, &mut world, &[KeyCode::Up, KeyCode::D]);
+        press(
+            &mut editor,
+            &mut world,
+            &[KeyCode::Up, KeyCode::D, KeyCode::D],
+        );
         assert_eq!(world.orders.len(), 2);
         assert!(!world.orders.iter().any(|o| *o == last));
         assert_eq!(editor.message.as_deref(), Some("CARD 3 DELETED"));
@@ -729,7 +798,9 @@ mod scenarios {
 
         fn power_trigger(&mut self, percent: u8) {
             self.press(&[KeyCode::T, KeyCode::Enter]);
-            let steps = (i32::from(percent) - i32::from(POWER_START)) / i32::from(POWER_STEP);
+            let tuning = tuning();
+            let steps = (i32::from(percent) - i32::from(tuning.power_start_percent))
+                / i32::from(tuning.power_step_percent);
             self.nudge(steps);
             self.press(&[KeyCode::Enter]);
         }
@@ -744,7 +815,7 @@ mod scenarios {
                 .unwrap();
             let start = modules[i].temp_centi_c().div_euclid(100) * 100;
             self.down_and_enter(i);
-            self.nudge((centi_c - start) / TEMP_STEP);
+            self.nudge((centi_c - start) / tuning().temp_step_centi_c);
             self.press(&[KeyCode::Enter]);
         }
 
@@ -806,6 +877,38 @@ mod scenarios {
             }
             let bottom: String = (0..COLS).map(|c| t.get(c, ROWS - 1).unwrap().ch).collect();
             assert_eq!(bottom, format!("+{}+", "-".repeat(COLS - 2)));
+
+            // Content stays clear of the message and the key help.
+            let inside = |row: usize| -> String {
+                (1..COLS - 1).map(|c| t.get(c, row).unwrap().ch).collect()
+            };
+            let (help_row, message_row) = (ROWS - 2, ROWS - 4);
+            let message = self.editor.message.as_deref().unwrap_or("");
+            let expected = format!(" {message:<width$}", width = COLS - 3);
+            assert_eq!(
+                inside(message_row),
+                expected,
+                "message row covered after {after:?}"
+            );
+            assert!(
+                inside(ROWS - 3).trim().is_empty(),
+                "content under the message after {after:?}"
+            );
+            let help = t.get(LEFT, help_row).unwrap();
+            assert_eq!(
+                (help.ch, help.ink),
+                ('[', Ink::Dim),
+                "help covered after {after:?}"
+            );
+
+            // The selected card is always on screen.
+            if self.editor.mode == Mode::List && !self.world.orders.is_empty() {
+                assert!(
+                    (TOP..message_row).any(|r| t.get(LEFT, r).unwrap().ch == '>'),
+                    "selected card scrolled off after {after:?}:\n{}",
+                    self.text()
+                );
+            }
         }
 
         fn text(&self) -> String {
@@ -1017,10 +1120,10 @@ mod scenarios {
         key_in_caretaker(&mut s);
         // The cursor sits on the card just stored.
         assert_eq!(s.editor.list.cursor(), 2);
-        s.press(&[KeyCode::Up, KeyCode::D]);
+        s.press(&[KeyCode::Up, KeyCode::D, KeyCode::D]);
         assert_eq!(s.editor.message.as_deref(), Some("CARD 2 DELETED"));
         assert_eq!(s.world.orders.get(1), Some(&caretaker()[2]));
-        s.press(&[KeyCode::D, KeyCode::D]);
+        s.press(&[KeyCode::D, KeyCode::D, KeyCode::Delete, KeyCode::Delete]);
         assert!(s.world.orders.is_empty());
         let message = s.editor.message.clone();
         s.press(&[KeyCode::D, KeyCode::Delete, KeyCode::Up, KeyCode::Enter]);
@@ -1045,7 +1148,7 @@ mod scenarios {
             s.editor.message.as_deref(),
             Some("TERMINAL MEMORY FULL: 8 CARDS")
         );
-        s.press(&[KeyCode::D, KeyCode::N]);
+        s.press(&[KeyCode::D, KeyCode::D, KeyCode::N]);
         assert!(matches!(s.editor.mode, Mode::Draft { .. }));
     }
 
@@ -1082,7 +1185,7 @@ mod scenarios {
         assert_eq!(
             s.draft().triggers,
             vec![
-                Trigger::PowerBelowPercent(5),
+                Trigger::PowerBelowPercent(1),
                 Trigger::PowerBelowPercent(100)
             ]
         );
@@ -1118,5 +1221,108 @@ mod scenarios {
             text.contains("> 8 P9"),
             "selected card scrolled off:\n{text}"
         );
+    }
+
+    #[test]
+    fn backspace_undoes_the_latest_part_whichever_kind_it_was() {
+        let mut s = Session::new(World::landfall());
+        s.press(&[KeyCode::N]);
+        s.action(ActionKind::Shutdown, "smelter_01");
+        s.power_trigger(25);
+        s.press(&[KeyCode::Backspace]);
+        assert!(s.draft().triggers.is_empty(), "the trigger came last");
+        assert_eq!(s.draft().actions.len(), 1);
+        s.press(&[KeyCode::Backspace, KeyCode::Backspace]);
+        assert!(s.draft().actions.is_empty());
+    }
+
+    #[test]
+    fn power_steps_by_one_below_the_first_step() {
+        let mut s = Session::new(World::landfall());
+        s.press(&[KeyCode::N]);
+        s.power_trigger(5);
+        s.press(&[KeyCode::T, KeyCode::Enter]);
+        // 25 down to 5 in whole steps, then 4, 3, 2, 1 (and no lower), then back up by one.
+        s.nudge(-9);
+        s.press(&[KeyCode::Right, KeyCode::Enter]);
+        assert_eq!(
+            s.draft().triggers,
+            vec![Trigger::PowerBelowPercent(5), Trigger::PowerBelowPercent(2)]
+        );
+    }
+
+    #[test]
+    fn delete_asks_first_and_any_other_key_cancels() {
+        let mut s = Session::new(World::landfall());
+        key_in_caretaker(&mut s);
+        s.press(&[KeyCode::D]);
+        assert_eq!(s.world.orders.len(), 3);
+        assert_eq!(
+            s.editor.message.as_deref(),
+            Some("DELETE CARD 3? [D] AGAIN TO CONFIRM")
+        );
+        // Moving away cancels, so the second D only asks about card 2.
+        s.press(&[KeyCode::Up, KeyCode::D]);
+        assert_eq!(s.world.orders.len(), 3);
+        // Esc cancels the question without leaving the terminal.
+        assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Stay);
+        assert_eq!(s.editor.message, None);
+        s.press(&[KeyCode::D]);
+        assert_eq!(s.world.orders.len(), 3);
+        s.press(&[KeyCode::D]);
+        assert_eq!(s.world.orders.len(), 2);
+        assert_eq!(s.world.orders.get(1), Some(&caretaker()[2]));
+    }
+
+    #[test]
+    fn backspace_on_the_list_stays_in_the_terminal() {
+        let mut s = Session::new(World::landfall());
+        s.press(&[KeyCode::N]);
+        s.power_trigger(25);
+        s.press(&[KeyCode::Backspace, KeyCode::Backspace, KeyCode::Escape]);
+        assert_eq!(s.editor.mode, Mode::List);
+        assert_eq!(s.press(&[KeyCode::Backspace]), Outcome::Stay);
+        assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Close);
+    }
+
+    /// The sim puts no limit on parts per card, so the screen has to cope.
+    #[test]
+    fn an_endless_draft_keeps_the_message_and_help_on_screen() {
+        let mut s = Session::new(World::landfall());
+        s.press(&[KeyCode::N]);
+        for i in 0..20 {
+            s.temp_trigger(i % 2 == 0, "hab_01", 1000 + 50 * i);
+        }
+        s.action(ActionKind::Activate, "heater_01");
+        // check_screen has run after every key; the latest part is still visible.
+        let text = s.text();
+        assert!(text.contains("activate heater_01"), "{text}");
+        s.press(&[KeyCode::A]);
+        assert!(s.text().contains("ADD ACTION: DO WHAT?"));
+    }
+
+    #[test]
+    fn the_list_scrolls_to_the_selected_card() {
+        let mut s = Session::new(World::landfall());
+        let memory = s.world.orders.tuning().memory;
+        for _ in 0..memory {
+            s.press(&[KeyCode::N]);
+            for i in 0..8 {
+                s.temp_trigger(i % 2 == 0, "smelter_01", -4000 + 50 * i);
+            }
+            s.action(ActionKind::Shutdown, "smelter_01");
+            s.press(&[KeyCode::Enter]);
+        }
+        assert_eq!(s.world.orders.len(), usize::from(memory));
+        // check_screen asserts the selected card is drawn after each key; a full lap
+        // visits every card and ends back on the last.
+        for _ in 0..memory {
+            s.press(&[KeyCode::Down]);
+        }
+        s.press(&[KeyCode::Down]);
+        let text = s.text();
+        assert!(text.contains("> 1 P1"), "wrapped back to the top:\n{text}");
+        s.press(&[KeyCode::Up]);
+        assert!(s.text().contains("> 8 P1"));
     }
 }
