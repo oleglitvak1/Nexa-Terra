@@ -1,0 +1,45 @@
+// Nexa Terra: Standing Orders tuning and preset rule cards.
+//
+// Units: temperatures in centi-degrees C, power in percent of stored charge.
+// A card fires once when all its triggers become true, then re-arms only after
+// one of its triggers has moved back past its threshold by the margin below
+// (see docs/architecture.md, "Standing Orders rule cards"). Priority 1 runs first.
+(
+    tuning: (
+        // How many cards the Caretaker terminal holds.
+        memory: 8,
+        // 2.0 C: wider than the FREEZE/NOMINAL flutter of a starved hab.
+        temp_margin_centi_c: 200,
+        power_margin_percent: 5,
+    ),
+    presets: {
+        // Ash Plain, crew away: give up the smelter before the battery runs flat,
+        // run both heaters and swing all line heat between the habs. The smelter
+        // freezes and goes offline; both habs stay nominal.
+        "caretaker": [
+            (
+                priority: 1,
+                triggers: [PowerBelowPercent(25)],
+                actions: [Deactivate("smelter_01"), Activate("heater_02"), DivertHeat(to: "hab_01")],
+            ),
+            (
+                priority: 2,
+                triggers: [TempAbove(module: "hab_01", centi_c: 1600)],
+                actions: [DivertHeat(to: "hab_02")],
+            ),
+            (
+                priority: 2,
+                triggers: [TempAbove(module: "hab_02", centi_c: 1600)],
+                actions: [DivertHeat(to: "hab_01")],
+            ),
+        ],
+        // The example card from the design doc on its own: saves hab_01, loses hab_02.
+        "doc-example": [
+            (
+                priority: 1,
+                triggers: [PowerBelowPercent(25)],
+                actions: [Deactivate("smelter_01"), DivertHeat(to: "hab_01")],
+            ),
+        ],
+    },
+)

@@ -4,6 +4,7 @@ use crate::terminal::{Ink, Terminal};
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::grid::Tile;
 use nexa_sim::machines::MachineState;
+use nexa_sim::orders::SkipReason;
 use nexa_sim::SimEvent;
 use nexa_types::Tick;
 
@@ -52,15 +53,23 @@ pub fn power_label(m: &Module) -> String {
 }
 
 pub fn log_line(at: Tick, event: &SimEvent) -> String {
+    let stamp = format!("S{:03} H{:02}", at.sol(), at.hour_of_sol());
+    // Cards show 1-based, as the terminal numbers its slots.
     match event {
         SimEvent::SolStarted { sol } => format!("SOL {sol:03} BEGINS"),
         SimEvent::MachineStateChanged { module, state } => format!(
-            "S{:03} H{:02} {} {}",
-            at.sol(),
-            at.hour_of_sol(),
+            "{stamp} {} {}",
             module.as_str().to_uppercase(),
             state_label(*state)
         ),
+        SimEvent::OrderFired { slot, .. } => format!("{stamp} ORDER {} FIRED", slot + 1),
+        SimEvent::OrderActionSkipped { slot, reason, .. } => {
+            let why = match reason {
+                SkipReason::Overridden => "OVERRIDDEN",
+                SkipReason::Rejected => "REJECTED",
+            };
+            format!("{stamp} ORDER {} {why}", slot + 1)
+        }
     }
 }
 
@@ -214,6 +223,19 @@ mod tests {
             state: MachineState::Freeze,
         };
         assert_eq!(log_line(Tick(27), &event), "S001 H01 HAB_02 FREEZE");
+    }
+
+    #[test]
+    fn log_lines_number_order_cards_from_one() {
+        let order = nexa_sim::orders::StandingOrder {
+            triggers: vec![nexa_sim::orders::Trigger::PowerBelowPercent(25)],
+            actions: vec![nexa_sim::orders::Action::Deactivate(ModuleId::new(
+                "smelter_01",
+            ))],
+            priority: 1,
+        };
+        let fired = SimEvent::OrderFired { slot: 0, order };
+        assert_eq!(log_line(Tick(51), &fired), "S001 H25 ORDER 1 FIRED");
     }
 
     #[test]

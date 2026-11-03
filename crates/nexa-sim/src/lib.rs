@@ -9,19 +9,47 @@
 use colony::{Colony, CommandError, LANDING_ASH_PLAIN};
 use machines::MachineState;
 use nexa_types::{Command, ModuleId, Tick, TICKS_PER_SOL};
+use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
 use serde::{Deserialize, Serialize};
 
 pub mod colony;
 pub mod grid;
 pub mod machines;
+pub mod orders;
 pub mod parts;
 
 /// The whole state of one player's game. Grows milestone by milestone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawWorld")]
 pub struct World {
     /// Current simulation time.
     pub now: Tick,
     pub colony: Colony,
+    /// Standing Orders; add cards through [`World::add_order`] so they're checked.
+    pub orders: Orders,
+}
+
+/// Unchecked wire form of [`World`]; serde checks it via `TryFrom`.
+#[derive(Deserialize)]
+struct RawWorld {
+    now: Tick,
+    colony: Colony,
+    /// Saves from before Standing Orders have none.
+    #[serde(default)]
+    orders: Orders,
+}
+
+impl TryFrom<RawWorld> for World {
+    type Error = OrderError;
+
+    fn try_from(raw: RawWorld) -> Result<Self, Self::Error> {
+        raw.orders.check(&raw.colony)?;
+        Ok(Self {
+            now: raw.now,
+            colony: raw.colony,
+            orders: raw.orders,
+        })
+    }
 }
 
 /// Something that happened during a tick, for the front end to display or sound.
@@ -33,6 +61,14 @@ pub enum SimEvent {
         module: ModuleId,
         state: MachineState,
     },
+    /// A Standing Order's triggers all held; its actions follow as their own events.
+    OrderFired { slot: usize, order: StandingOrder },
+    /// One action of a fired card did nothing.
+    OrderActionSkipped {
+        slot: usize,
+        action: Action,
+        reason: SkipReason,
+    },
 }
 
 impl World {
@@ -40,6 +76,7 @@ impl World {
         Self {
             now: Tick::default(),
             colony,
+            orders: Orders::default(),
         }
     }
 
@@ -51,7 +88,9 @@ impl World {
 
     /// Advance the simulation by one fixed step (one planetary hour).
     pub fn tick(&mut self) -> Vec<SimEvent> {
-        let mut events = self.colony.tick();
+        // The Caretaker reads the gauges and acts, then the hour runs.
+        let mut events = self.orders.evaluate(&mut self.colony);
+        events.extend(self.colony.tick());
         self.now = Tick(self.now.0 + 1);
         if self.now.0.is_multiple_of(TICKS_PER_SOL) {
             events.push(SimEvent::SolStarted {
@@ -64,11 +103,17 @@ impl World {
     pub fn apply(&mut self, cmd: &Command) -> Result<Vec<SimEvent>, CommandError> {
         self.colony.apply(cmd)
     }
+
+    /// Store a Standing Order in the next free slot, checked against this colony.
+    pub fn add_order(&mut self, order: StandingOrder) -> Result<usize, OrderError> {
+        self.orders.add(order, &self.colony)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orders::OrdersDef;
 
     #[test]
     fn one_sol_of_ticks_starts_sol_one() {
@@ -106,5 +151,113 @@ mod tests {
         }
         let saved = ron::to_string(&world).unwrap();
         assert_eq!(ron::from_str::<World>(&saved).unwrap(), world);
+    }
+
+    fn with_preset(name: &str) -> World {
+        let mut world = World::landfall();
+        for order in &OrdersDef::shipped().presets[name] {
+            world.add_order(order.clone()).unwrap();
+        }
+        world
+    }
+
+    fn run_sols(world: &mut World, sols: u64) -> Vec<SimEvent> {
+        (0..sols * TICKS_PER_SOL)
+            .flat_map(|_| world.tick())
+            .collect()
+    }
+
+    #[test]
+    fn orders_and_their_firing_state_survive_a_save() {
+        let mut world = with_preset("caretaker");
+        // Mid-run, so some cards are disarmed and a heat diversion is live.
+        run_sols(&mut world, 3);
+        let saved = ron::to_string(&world).unwrap();
+        let mut loaded: World = ron::from_str(&saved).unwrap();
+        assert_eq!(loaded, world);
+        assert_eq!(run_sols(&mut loaded, 2), run_sols(&mut world, 2));
+    }
+
+    #[test]
+    fn saves_from_before_standing_orders_still_load() {
+        #[derive(Serialize)]
+        struct OldWorld<'a> {
+            now: Tick,
+            colony: &'a Colony,
+        }
+        let world = World::landfall();
+        let old = ron::to_string(&OldWorld {
+            now: world.now,
+            colony: &world.colony,
+        })
+        .unwrap();
+        let loaded: World = ron::from_str(&old).unwrap();
+        assert!(loaded.orders.is_empty());
+        assert_eq!(loaded, world);
+    }
+
+    #[test]
+    fn a_save_with_a_bad_card_is_rejected() {
+        let world = with_preset("caretaker");
+        let saved = ron::to_string(&world).unwrap();
+        let ghost = saved.replace("\"hab_02\")", "\"ghost\")");
+        assert_ne!(ghost, saved);
+        assert!(ron::from_str::<World>(&ghost).is_err());
+        let tiny_memory = saved.replace("memory:8", "memory:2");
+        assert_ne!(tiny_memory, saved);
+        assert!(ron::from_str::<World>(&tiny_memory).is_err());
+    }
+
+    #[test]
+    fn orders_are_deterministic() {
+        let mut a = with_preset("caretaker");
+        let mut b = with_preset("caretaker");
+        for _ in 0..10 * TICKS_PER_SOL {
+            assert_eq!(a.tick(), b.tick());
+        }
+        assert_eq!(a, b);
+    }
+
+    fn hab_failures(events: &[SimEvent]) -> Vec<&SimEvent> {
+        events
+            .iter()
+            .filter(|e| match e {
+                SimEvent::MachineStateChanged { module, state } => {
+                    module.as_str().starts_with("hab_")
+                        && matches!(state, MachineState::Offline | MachineState::Burnout)
+                }
+                _ => false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unattended_ash_plain_loses_both_habs_by_sol_10() {
+        let mut world = World::landfall();
+        let events = run_sols(&mut world, 10);
+        assert_eq!(hab_failures(&events).len(), 2);
+    }
+
+    /// The Caretaker scenario: three cards keep both habs alive through Sol 10.
+    /// The price is the smelter, which is shut down and left to freeze.
+    #[test]
+    fn caretaker_orders_keep_both_habs_through_sol_10() {
+        let mut world = with_preset("caretaker");
+        let events = run_sols(&mut world, 10);
+        assert_eq!(hab_failures(&events), Vec::<&SimEvent>::new());
+        for hab in ["hab_01", "hab_02"] {
+            let m = world.colony.module(&ModuleId::new(hab)).unwrap();
+            let machine = m.machine().unwrap();
+            assert_eq!(machine.state(), MachineState::Nominal, "{hab}");
+        }
+        // Landing damage only: the habs never left their band.
+        let wear = |hab: &str| {
+            let m = world.colony.module(&ModuleId::new(hab)).unwrap();
+            m.machine().unwrap().wear_bp()
+        };
+        assert_eq!((wear("hab_01"), wear("hab_02")), (4000, 0));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, SimEvent::OrderFired { slot: 0, .. })));
     }
 }
