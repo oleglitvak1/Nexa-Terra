@@ -86,7 +86,7 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef` |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
-| `crew` | Six named specialists, skills, stress, morale, assignments | `CrewId`, `CrewMember`, `Assignment` (Ground, Flight), `Trait` |
+| `crew` | Six named specialists from `content/crew.ron`, skills, stress, morale, assignments, the Split | `CrewId`, `CrewMember`, `Crew`, `Assignment` (Ground, Flight), `Skill`, `Trait`, `StressBand`, `SplitError` |
 | `orders` | Standing Orders rule cards: typed model + evaluator, run each tick from `World::tick` | `Trigger`, `Action`, `StandingOrder`, `Orders`, `render()`, `evaluate()` |
 | `flight` | The Slip transit, fuel, cargo integrity, delays | `Voyage`, `Manifest`, `HazardEvent`, `Resolution` |
 | `station` | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
@@ -132,6 +132,14 @@ Preset card sets live in `content/standing_orders.ron`. `cargo run -p nexa-tools
 **The editor** (`nexa-game/src/orders_view.rs`, `[O]` from the colony screen) lists the cards with slot, priority and command text, and builds new ones from lists: a trigger kind, then its module and threshold (temperatures start at the module's current reading, in 0.5 C steps; power in 5% steps, then 1% steps below 5% so any value from 1 to 100% can be set), then an action and its module, then priority 1 to 9. The steps, ranges and highest priority are the `editor` block of `content/standing_orders.ron`; they aren't saved, since stored cards already hold their values. Heat actions only offer modules on a heat line. Backspace undoes the last part added, and deleting a card takes a second `D` to confirm. Cards are stored and deleted through `World::add_order` and `World::remove_order`, so a refused card stays open and the terminal shows the sim's `OrderError`. The colony is held while the terminal is open.
 
 A typed-entry parser that produces the same enums can be added later; the slice doesn't need one.
+
+**Crew and the Split.** The six crew are data (`content/crew.ron`): name, role, `adult` and `pilot` flags, skills 0 to 5 (`Skill`: Piloting, Engineering, Medicine, Negotiation, Astrogation, Sensors), one `Trait`, and starting stress and morale. A save keeps the crew content it was made with, like `ModuleDef`s.
+
+- **Assignments.** Everyone starts on `Ground`. The player moves crew between `Ground` and `Flight` on the Split screen (`[S]` from the colony screen) at any time, then confirms. Confirming checks three rules and refuses with a `SplitError`: no pilot aboard (`NoPilotAboard`), Maya without an adult on her side (`MinorUnaccompanied`; Oron-3 counts as an adult), nobody at the base (`BaseUnattended`). A confirmed Split is locked; Milestone 5's launch uses it.
+- **Commands.** `Command` is split in two: `Command::Colony(ColonyCommand)` goes to `Colony::apply` (Standing Order actions map only to these), `Command::Crew(CrewCommand)` (`Assign { crew, to }`, `ConfirmSplit`) goes to `Crew::apply`.
+- **Stress and morale** are whole percentages, 0 to 100. Once an hour, after the colony's step, each crew member gains stress from typed strains read off the colony (a hab out of its band, a failed hab, low power) for the side they're on, or recovers when none apply; amounts and thresholds are in `content/crew.ron`. Stress falls in three bands, Steady, Strained and Breaking; crossing one emits `SimEvent::CrewStressChanged`. Morale falls while a crew member is Breaking and recovers while Steady. Bands have no effect yet; Milestone 5's skill checks read them.
+- **Traits** are an exhaustive enum. Two act now: *Father's Vigilance* (Jonathan takes extra stress while he and Maya are on the same side and a hab is cold) and *Hippocratic Anchor* (Elena loses morale while a crewmate on her side is Breaking). Combat Fatigue, Clinical Detachment and Flight Risk arrive with The Slip and the station; Living Compass with Echoes.
+- **Not yet.** Surface specializations (Jonathan's wider tolerances, Cal's fewer accidents) don't touch the colony: the Ash Plain balance and its tests assume no crew effects, so they come in a later balance pass.
 
 **Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
 
@@ -286,7 +294,7 @@ Milestones are ordered, not dated; each ends with something playable or testable
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
 2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
 3. **Standing Orders.** *(Done.)* Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
-4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
+4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its three rules.
 5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.
 6. **Scrap Barge 77.** Haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
 7. **Layer 1.** CRT shader, synthesized sound effects and ambience.
@@ -303,7 +311,7 @@ All eight spec questions are decided. Three were adjusted to fit this architectu
 | --- | --- | --- |
 | Time model | Real-time with pause for the colony (1x / 2x / 3x); discrete event steps for The Slip and stations | Sim unchanged: fixed ticks, front end sets speed. 1 tick = 1 hour, 26 ticks per Sol; at 1x, 1 hour = 5 s (about 2 min 10 s per Sol). On landing the sim fast-forwards the colony through the elapsed Sols |
 | Colony view | Isometric, fixed angle | **Adjusted:** no 4-way rotation for now, since it multiplies sprite work by four. Layer 0 ASCII stays top-down; the sim grid doesn't depend on projection, so isometric is a Layer 2 rendering choice |
-| Crew split | Player decides fully, with two rules: at least one qualified pilot on *The Mullein*; at least one adult stays with Maya | Rules validated in `crew` when the Split is confirmed. Non-pilots flying via a flight manual is out of slice scope |
+| Crew split | Player decides fully, with three rules: at least one qualified pilot on *The Mullein*; at least one adult with Maya, wherever she is; at least one crew member stays at the base | Rules validated in `crew` when the Split is confirmed. Oron-3 counts as an adult. Non-pilots flying via a flight manual is out of slice scope |
 | Barge 77 merchant | Silas "Grip" Vane, scrap broker running the reclamation dock. Whoever goes negotiates; Dax is best | Haggle uses the negotiator's skill and that character's own dialogue set |
 | Epoch 01 exit | Carbon filters only. Bore valves move to the start of Epoch 02 | Done in the GDD |
 | Day budget | Nominal run 23 Sols (10 ground, 5 + 5 flight, 3 station). Random hazard delays capped at +12 Sols, so the worst random case lands on Sol 35 | **Adjusted:** the cap covers random hazards only. Player-caused audits and penalties stack uncapped, so one 14-Sol audit after bad luck lands on Sol 49 and loses the colony |

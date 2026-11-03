@@ -238,7 +238,7 @@ The prototype is verified as complete when an external playtester, starting with
 
 1. Touch down on Nexa Terra, triage the damaged landing habs, and diagnose the 45-Sol life-support scrubber deadline.
 2. Route power through the grid to extract 10 tons of raw silicon while managing thermal heating lines to prevent frozen seals.
-3. Split the crew (at least one pilot aboard, at least one adult with Maya), leave adequate Standing Orders for the Caretakers, and launch *The Mullein* into The Slip.
+3. Split the crew (at least one pilot aboard, at least one adult with Maya, at least one crew member at the base), leave adequate Standing Orders for the Caretakers, and launch *The Mullein* into The Slip.
 4. Resolve an in-flight pirate interdiction via the cockpit terminal using a skill check or cargo concession.
 5. Dock at Scrap Barge 77, conduct a multi-turn negotiation with Silas "Grip" Vane (led by Dax or whoever made the trip) to secure replacement Carbon Filters, and resolve a high-stakes charity dilemma.
 6. Fly the return leg, land safely on Nexa Terra, review the Black Box reconciliation report of automated base events, and install the new filters to trigger the first rain milestone.
