@@ -1,17 +1,23 @@
 //! Nexa Terra game client.
 //!
-//! Milestone 1: an amber terminal that boots, waits for a key, then shows the
-//! simulation clock running in real time with pause.
+//! An amber terminal that boots, waits for a key, then shows the colony map
+//! and its status, with the simulation running in real time with pause.
 
+mod colony_view;
 mod terminal;
 
 use macroquad::prelude::*;
 use nexa_sim::World;
 use nexa_types::Tick;
+use std::collections::VecDeque;
 use terminal::{Ink, Terminal};
 
 const COLS: usize = 80;
-const ROWS: usize = 30;
+/// Tall enough for the 32-row map plus a header and key-help row inside the frame.
+const ROWS: usize = 36;
+
+/// Log lines kept for the base log; more than the screen shows.
+const LOG_CAPACITY: usize = 64;
 
 /// Real seconds per simulated hour at 1x speed (GDD: 1 hour = 5 s).
 const SECONDS_PER_HOUR_AT_1X: f64 = 5.0;
@@ -41,19 +47,21 @@ struct App {
     paused: bool,
     speed: u32,
     hour_accumulator: f64,
+    log: VecDeque<String>,
 }
 
 impl App {
     fn new() -> Self {
         Self {
             term: Terminal::new(COLS, ROWS),
-            world: World::new(),
+            world: World::landfall(),
             screen: Screen::Boot {
                 started: get_time(),
             },
             paused: false,
             speed: 1,
             hour_accumulator: 0.0,
+            log: VecDeque::new(),
         }
     }
 
@@ -79,7 +87,13 @@ impl App {
                     self.hour_accumulator += get_frame_time() as f64 * self.speed as f64;
                     while self.hour_accumulator >= SECONDS_PER_HOUR_AT_1X {
                         self.hour_accumulator -= SECONDS_PER_HOUR_AT_1X;
-                        self.world.tick();
+                        let at = self.world.now;
+                        for event in self.world.tick() {
+                            if self.log.len() == LOG_CAPACITY {
+                                self.log.pop_front();
+                            }
+                            self.log.push_back(colony_view::log_line(at, &event));
+                        }
                     }
                 }
             }
@@ -105,29 +119,29 @@ impl App {
             }
             Screen::Online => {
                 let now: Tick = self.world.now;
-                t.put_str(4, 3, "MULLEIN SYSTEMS // TERMINAL ONLINE", Ink::Bright);
-                t.put_str(
-                    4,
-                    5,
-                    &format!("SOL {:03}   HOUR {:02}", now.sol(), now.hour_of_sol()),
-                    Ink::Amber,
-                );
+                t.put_str(2, 1, "MULLEIN SYSTEMS // ASH PLAIN COLONY", Ink::Bright);
                 let status = if self.paused {
                     "PAUSED".to_string()
                 } else {
                     format!("RUNNING {}x", self.speed)
                 };
-                t.put_str(4, 6, &format!("CLOCK     {status}"), Ink::Amber);
-                t.put_str(4, 8, "COLONY SIMULATION NOT YET INSTALLED.", Ink::Dim);
+                // Right-aligned inside the frame so it never runs into the title.
+                let clock = format!(
+                    "SOL {:03}  HOUR {:02}  {status}",
+                    now.sol(),
+                    now.hour_of_sol()
+                );
+                let clock_col = COLS.saturating_sub(2 + clock.chars().count());
+                t.put_str(clock_col, 1, &clock, Ink::Amber);
+                colony_view::draw_map(t, &self.world.colony, blink);
+                let next = colony_view::draw_status(t, &self.world.colony, colony_view::MAP_ROW);
+                colony_view::draw_log(t, self.log.iter(), next + 1, ROWS - 2);
                 t.put_str(
-                    4,
-                    ROWS - 3,
+                    2,
+                    ROWS - 2,
                     "[SPACE] PAUSE   [1] [2] [3] SPEED   [ESC] SHUT DOWN",
                     Ink::Dim,
                 );
-                if blink {
-                    t.put_str(4, 10, "_", Ink::Bright);
-                }
             }
         }
         t.draw();

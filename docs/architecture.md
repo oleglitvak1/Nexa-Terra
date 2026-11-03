@@ -83,6 +83,7 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | Module | Owns | Key types |
 | --- | --- | --- |
 | `grid` | Tile map, conduits, power / thermal fluid / oxygen routing | `Grid`, `Tile`, `Network`, `FlowSolver` |
+| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef` |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
 | `crew` | Six named specialists, skills, stress, morale, assignments | `CrewId`, `CrewMember`, `Assignment` (Ground, Flight), `Trait` |
@@ -93,6 +94,12 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | `epochs` | Atmosphere state and epoch milestones | `Atmosphere` (pressure, temp, toxicity, water), `Epoch` |
 | `blackbox` | Log of everything that happened while the crew was away | `LogEntry`, `Reconciliation` |
 | `rng` | The only source of randomness | `SimRng` (seeded, serializable, e.g. ChaCha8) |
+
+**Colony grid model.** The colony steps once per tick (one planetary hour), in three phases. All numbers are integers and live in the content file.
+
+- **Power (battery bank).** Touching conduit tiles form a power network. Each hour, a network's generators plus its stored battery charge supply its consumers in content-file order; a consumer that doesn't fit what's left goes dark for that hour. Surplus charges the batteries, a deficit drains them. `grid.power %` is total stored charge over total capacity.
+- **Heat (cold pull + heat lines).** Running modules pour heat into their heat line's pool, shared evenly among the line's working (not failed) machines, or sent entirely to one module when the player diverts heat (`DivertHeat`). Then every module loses a fixed percentage of its gap to the outside temperature. A module off any heat line keeps its own heat.
+- **Wear meter.** A machine gains wear (basis points per hour) only while out of its tolerance band. At 100% it fails: Overheat becomes Burnout, Freeze becomes Offline. A failed machine draws no power and makes no heat. A repair uses one part (Burnout: Tungsten Heating Filament; Offline: Viton Seal) and resets wear to 0.
 
 **Standing Orders rule cards.** Orders are stored as typed Rust enums, never as strings. The player builds each one as a rule card by filling trigger, action and priority slots from lists, and the terminal renders the card in command syntax:
 
@@ -257,7 +264,7 @@ Because the sim is pure and deterministic, most of the game can be tested withou
 Milestones are ordered, not dated; each ends with something playable or testable. Milestones 1 through 6 are "Slice 0": the whole vertical-slice loop in text.
 
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
-2. **Grid and machines.** Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
+2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
 3. **Standing Orders.** Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
 4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
 5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.

@@ -19,6 +19,7 @@ nexa-types = { path = "crates/nexa-types" }
 nexa-sim = { path = "crates/nexa-sim" }
 serde = { version = "1", features = ["derive"] }
 macroquad = "0.4"
+ron = "0.8"
 
 [profile.dev.package."*"]
 # Optimize dependencies even in debug builds so the window stays smooth.

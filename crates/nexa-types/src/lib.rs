@@ -30,6 +30,44 @@ impl Tick {
     }
 }
 
+/// Stable name of a colony module, as written in content files (e.g. `hab_01`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModuleId(pub String);
+
+impl ModuleId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ModuleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Something the player (or a Standing Order) asks the colony to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Command {
+    Activate(ModuleId),
+    Deactivate(ModuleId),
+    /// Send all heat on the module's heat line to that module.
+    DivertHeat {
+        to: ModuleId,
+    },
+    /// Undo a diversion: heat on this module's line is shared again.
+    ShareHeat {
+        line_of: ModuleId,
+    },
+    /// Fit a spare part to a failed machine.
+    Repair(ModuleId),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -86,6 +86,12 @@ impl Terminal {
         }
     }
 
+    pub fn put_char(&mut self, col: usize, row: usize, ch: char, ink: Ink) {
+        if col < self.cols && row < self.rows {
+            self.cells[row * self.cols + col] = Cell { ch, ink };
+        }
+    }
+
     /// Write text centered horizontally on a row.
     pub fn put_centered(&mut self, row: usize, text: &str, ink: Ink) {
         let len = text.chars().count();
