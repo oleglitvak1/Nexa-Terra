@@ -18,7 +18,7 @@ On Linux, macroquad needs `libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`.
 macOS and Windows need nothing extra.
 
 Controls: any key boots the terminal; `Space` pauses, `1` / `2` / `3` set speed,
-`Esc` quits.
+`O` opens the Standing Orders terminal, `Esc` backs out of a screen or quits.
 
 ## Layout
 

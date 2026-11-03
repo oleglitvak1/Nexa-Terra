@@ -12,6 +12,17 @@
         temp_margin_centi_c: 200,
         power_margin_percent: 5,
     ),
+    // The terminal's card builder: priority 1 up to priority_max, and how far
+    // one key press moves a threshold. Power steps by 1 below one full step.
+    editor: (
+        priority_max: 9,
+        power_start_percent: 25,
+        power_step_percent: 5,
+        // 0.5 C per press, from -50.0 C to 100.0 C.
+        temp_step_centi_c: 50,
+        temp_min_centi_c: -5000,
+        temp_max_centi_c: 10000,
+    ),
     presets: {
         // Ash Plain, crew away: give up the smelter before the battery runs flat,
         // run both heaters and swing all line heat between the habs. The smelter

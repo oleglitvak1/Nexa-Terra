@@ -1,14 +1,18 @@
 //! Nexa Terra game client.
 //!
 //! An amber terminal that boots, waits for a key, then shows the colony map
-//! and its status, with the simulation running in real time with pause.
+//! and its status, with the simulation running in real time with pause. The
+//! Caretaker terminal edits Standing Orders while the colony is held.
 
 mod colony_view;
+mod orders_view;
 mod terminal;
+mod ui;
 
 use macroquad::prelude::*;
 use nexa_sim::World;
 use nexa_types::Tick;
+use orders_view::{OrdersEditor, Outcome};
 use std::collections::VecDeque;
 use terminal::{Ink, Terminal};
 
@@ -36,8 +40,12 @@ const BOOT_LINES: &[&str] = &[
 const BOOT_LINE_DELAY: f64 = 0.35;
 
 enum Screen {
-    Boot { started: f64 },
+    Boot {
+        started: f64,
+    },
     Online,
+    /// The colony doesn't run while the terminal is open.
+    Orders(OrdersEditor),
 }
 
 struct App {
@@ -65,10 +73,14 @@ impl App {
         }
     }
 
-    fn update(&mut self, key: Option<KeyCode>) {
-        match self.screen {
+    /// False when the player shuts the game down.
+    fn update(&mut self, key: Option<KeyCode>) -> bool {
+        match &mut self.screen {
             Screen::Boot { started } => {
-                let boot_done = get_time() - started > BOOT_LINES.len() as f64 * BOOT_LINE_DELAY;
+                if key == Some(KeyCode::Escape) {
+                    return false;
+                }
+                let boot_done = get_time() - *started > BOOT_LINES.len() as f64 * BOOT_LINE_DELAY;
                 // Any key press after boot starts the terminal. This first key
                 // press is also what browsers require before audio may play.
                 if boot_done && key.is_some() {
@@ -77,6 +89,8 @@ impl App {
             }
             Screen::Online => {
                 match key {
+                    Some(KeyCode::Escape) => return false,
+                    Some(KeyCode::O) => self.screen = Screen::Orders(OrdersEditor::new()),
                     Some(KeyCode::Space) => self.paused = !self.paused,
                     Some(KeyCode::Key1) => self.speed = 1,
                     Some(KeyCode::Key2) => self.speed = 2,
@@ -97,7 +111,15 @@ impl App {
                     }
                 }
             }
+            Screen::Orders(editor) => {
+                if let Some(key) = key {
+                    if editor.handle(key, &mut self.world) == Outcome::Close {
+                        self.screen = Screen::Online;
+                    }
+                }
+            }
         }
+        true
     }
 
     fn render(&mut self) {
@@ -106,9 +128,9 @@ impl App {
         t.clear();
         t.frame(0, 0, t.cols(), t.rows(), Ink::Dim);
 
-        match self.screen {
+        match &self.screen {
             Screen::Boot { started } => {
-                let shown = ((get_time() - started) / BOOT_LINE_DELAY) as usize;
+                let shown = ((get_time() - *started) / BOOT_LINE_DELAY) as usize;
                 for (i, line) in BOOT_LINES.iter().take(shown).enumerate() {
                     let ink = if i == 0 { Ink::Bright } else { Ink::Amber };
                     t.put_str(4, 3 + i, line, ink);
@@ -118,34 +140,47 @@ impl App {
                 }
             }
             Screen::Online => {
-                let now: Tick = self.world.now;
-                t.put_str(2, 1, "MULLEIN SYSTEMS // ASH PLAIN COLONY", Ink::Bright);
                 let status = if self.paused {
                     "PAUSED".to_string()
                 } else {
                     format!("RUNNING {}x", self.speed)
                 };
-                // Right-aligned inside the frame so it never runs into the title.
-                let clock = format!(
-                    "SOL {:03}  HOUR {:02}  {status}",
-                    now.sol(),
-                    now.hour_of_sol()
+                draw_title(
+                    t,
+                    "MULLEIN SYSTEMS // ASH PLAIN COLONY",
+                    self.world.now,
+                    &status,
                 );
-                let clock_col = COLS.saturating_sub(2 + clock.chars().count());
-                t.put_str(clock_col, 1, &clock, Ink::Amber);
                 colony_view::draw_map(t, &self.world.colony, blink);
                 let next = colony_view::draw_status(t, &self.world.colony, colony_view::MAP_ROW);
                 colony_view::draw_log(t, self.log.iter(), next + 1, ROWS - 2);
                 t.put_str(
                     2,
                     ROWS - 2,
-                    "[SPACE] PAUSE   [1] [2] [3] SPEED   [ESC] SHUT DOWN",
+                    "[SPACE] PAUSE   [1] [2] [3] SPEED   [O] STANDING ORDERS   [ESC] SHUT DOWN",
                     Ink::Dim,
                 );
+            }
+            Screen::Orders(editor) => {
+                let title = "MULLEIN SYSTEMS // CARETAKER TERMINAL";
+                draw_title(t, title, self.world.now, "HELD");
+                editor.draw(t, &self.world, ROWS - 2);
             }
         }
         t.draw();
     }
+}
+
+/// Title on the left; the clock right-aligned inside the frame so it never runs into the title.
+fn draw_title(t: &mut Terminal, title: &str, now: Tick, status: &str) {
+    t.put_str(2, 1, title, Ink::Bright);
+    let clock = format!(
+        "SOL {:03}  HOUR {:02}  {status}",
+        now.sol(),
+        now.hour_of_sol()
+    );
+    let clock_col = COLS.saturating_sub(2 + clock.chars().count());
+    t.put_str(clock_col, 1, &clock, Ink::Amber);
 }
 
 fn window_conf() -> Conf {
@@ -161,11 +196,9 @@ fn window_conf() -> Conf {
 async fn main() {
     let mut app = App::new();
     loop {
-        let key = get_last_key_pressed();
-        if key == Some(KeyCode::Escape) {
+        if !app.update(get_last_key_pressed()) {
             break;
         }
-        app.update(key);
         app.render();
         next_frame().await;
     }

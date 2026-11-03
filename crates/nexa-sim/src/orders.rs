@@ -57,9 +57,24 @@ pub struct OrderTuning {
 }
 
 /// The Standing Orders content file.
+/// How the terminal's card builder steps thresholds and priorities. Content only:
+/// unlike [`OrderTuning`] it isn't stored in saves, since cards already hold their values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorTuning {
+    /// Priorities offered run from 1 up to this.
+    pub priority_max: u8,
+    /// Where a new power trigger starts, and how far one key press moves it.
+    pub power_start_percent: u8,
+    pub power_step_percent: u8,
+    pub temp_step_centi_c: i32,
+    pub temp_min_centi_c: i32,
+    pub temp_max_centi_c: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrdersDef {
     pub tuning: OrderTuning,
+    pub editor: EditorTuning,
     /// Named starter card sets, e.g. `caretaker`.
     #[serde(default)]
     pub presets: BTreeMap<String, Vec<StandingOrder>>,
@@ -550,6 +565,26 @@ mod tests {
                 orders
                     .add(order.clone(), &colony)
                     .unwrap_or_else(|e| panic!("preset {name}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn shipped_editor_tuning_can_key_in_every_preset() {
+        let def = OrdersDef::shipped();
+        let e = def.editor;
+        assert!(e.priority_max >= 1);
+        assert!((1..=100).contains(&e.power_start_percent));
+        assert!(e.power_step_percent >= 1 && e.temp_step_centi_c >= 1);
+        assert!(e.temp_min_centi_c < e.temp_max_centi_c);
+        for card in def.presets.values().flatten() {
+            assert!((1..=e.priority_max).contains(&card.priority));
+            for trigger in &card.triggers {
+                if let Trigger::TempBelow { centi_c, .. } | Trigger::TempAbove { centi_c, .. } =
+                    trigger
+                {
+                    assert!((e.temp_min_centi_c..=e.temp_max_centi_c).contains(centi_c));
+                }
             }
         }
     }

@@ -108,6 +108,11 @@ impl World {
     pub fn add_order(&mut self, order: StandingOrder) -> Result<usize, OrderError> {
         self.orders.add(order, &self.colony)
     }
+
+    /// Take a Standing Order out of its slot; later cards move up.
+    pub fn remove_order(&mut self, slot: usize) -> Result<StandingOrder, OrderError> {
+        self.orders.remove(slot)
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +211,17 @@ mod tests {
         let tiny_memory = saved.replace("memory:8", "memory:2");
         assert_ne!(tiny_memory, saved);
         assert!(ron::from_str::<World>(&tiny_memory).is_err());
+    }
+
+    #[test]
+    fn removing_an_order_moves_later_cards_up() {
+        let mut world = with_preset("caretaker");
+        let third = world.orders.get(2).unwrap().clone();
+        let first = world.remove_order(0).unwrap();
+        assert_eq!(first, OrdersDef::shipped().presets["caretaker"][0]);
+        assert_eq!(world.orders.len(), 2);
+        assert_eq!(world.orders.get(1), Some(&third));
+        assert_eq!(world.remove_order(2), Err(OrderError::NoSuchSlot(2)));
     }
 
     #[test]

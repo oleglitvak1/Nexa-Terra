@@ -129,6 +129,8 @@ How the Caretaker runs them (`orders::Orders`, stored on `World` so cards and th
 
 Preset card sets live in `content/standing_orders.ron`. `cargo run -p nexa-tools -- 10 --orders caretaker` runs one headless. The `caretaker` preset is three cards: at power below 25%, shut down the smelter, start heater_02 and divert line heat to hab_01, then swing the heat to whichever hab hasn't passed 16.0 C. It keeps both habs nominal with no added wear through Sol 45. The cost is the smelter, which freezes and goes Offline on Sol 5. Keeping the smelter alive as well needs near-perfect hour-by-hour control with the battery near empty, which a small card set can't do on the current content.
 
+**The editor** (`nexa-game/src/orders_view.rs`, `[O]` from the colony screen) lists the cards with slot, priority and command text, and builds new ones from lists: a trigger kind, then its module and threshold (temperatures start at the module's current reading, in 0.5 C steps; power in 5% steps, then 1% steps below 5% so any value from 1 to 100% can be set), then an action and its module, then priority 1 to 9. The steps, ranges and highest priority are the `editor` block of `content/standing_orders.ron`; they aren't saved, since stored cards already hold their values. Heat actions only offer modules on a heat line. Backspace undoes the last part added, and deleting a card takes a second `D` to confirm. Cards are stored and deleted through `World::add_order` and `World::remove_order`, so a refused card stays open and the terminal shows the sim's `OrderError`. The colony is held while the terminal is open.
+
 A typed-entry parser that produces the same enums can be added later; the slice doesn't need one.
 
 **Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
@@ -283,7 +285,7 @@ Milestones are ordered, not dated; each ends with something playable or testable
 
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
 2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
-3. **Standing Orders.** Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended. *(Model and evaluator done; editor screen next.)*
+3. **Standing Orders.** *(Done.)* Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
 4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
 5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.
 6. **Scrap Barge 77.** Haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
