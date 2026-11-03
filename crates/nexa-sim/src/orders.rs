@@ -7,10 +7,17 @@
 
 use crate::colony::Colony;
 use crate::SimEvent;
-use nexa_types::{Command, ModuleId};
+use nexa_types::{Command, ModuleId, CENTI_PER_DEGREE};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 use std::sync::OnceLock;
+
+/// Power thresholds a card accepts: outside this a card would never fire, or never re-arm.
+pub const POWER_PERCENT: RangeInclusive<u8> = 1..=100;
+
+/// The grid can't charge past full, so a re-arm point above this would never be reached.
+const FULL_CHARGE_PERCENT: u16 = 100;
 
 /// A condition a card watches. Water and emergency candles come with those systems.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,7 +63,6 @@ pub struct OrderTuning {
     pub power_margin_percent: u8,
 }
 
-/// The Standing Orders content file.
 /// How the terminal's card builder steps thresholds and priorities. Content only:
 /// unlike [`OrderTuning`] it isn't stored in saves, since cards already hold their values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +77,7 @@ pub struct EditorTuning {
     pub temp_max_centi_c: i32,
 }
 
+/// The Standing Orders content file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrdersDef {
     pub tuning: OrderTuning,
@@ -174,7 +181,8 @@ impl Trigger {
     fn cleared(&self, colony: &Colony, tuning: &OrderTuning) -> bool {
         match self {
             Trigger::PowerBelowPercent(p) => {
-                let rearm = (u16::from(*p) + u16::from(tuning.power_margin_percent)).min(100);
+                let rearm = (u16::from(*p) + u16::from(tuning.power_margin_percent))
+                    .min(FULL_CHARGE_PERCENT);
                 u16::from(colony.power_percent()) >= rearm
             }
             Trigger::TempBelow { module, centi_c } => temp(colony, module).is_some_and(|t| {
@@ -254,9 +262,16 @@ impl Action {
 }
 
 impl StandingOrder {
-    /// The card in the terminal's command syntax.
+    /// The card in the terminal's command syntax. A side with nothing on it yet (a
+    /// draft in the editor) shows as `...`; a stored card always has both.
     pub fn render(&self) -> String {
-        let join = |parts: Vec<String>| parts.join(" AND ");
+        let join = |parts: Vec<String>| {
+            if parts.is_empty() {
+                "...".to_string()
+            } else {
+                parts.join(" AND ")
+            }
+        };
         format!(
             "IF {} THEN {}",
             join(self.triggers.iter().map(Trigger::render).collect()),
@@ -274,7 +289,7 @@ impl StandingOrder {
         }
         for trigger in &self.triggers {
             if let Trigger::PowerBelowPercent(p) = trigger {
-                if !(1..=100).contains(p) {
+                if !POWER_PERCENT.contains(p) {
                     return Err(OrderError::PercentOutOfRange(*p));
                 }
             }
@@ -337,6 +352,11 @@ impl Orders {
         self.cards.is_empty()
     }
 
+    /// Every slot is taken; [`Self::add`] would refuse a card.
+    pub fn is_full(&self) -> bool {
+        self.cards.len() >= usize::from(self.tuning.memory)
+    }
+
     pub fn get(&self, slot: usize) -> Option<&StandingOrder> {
         self.cards.get(slot).map(|c| &c.order)
     }
@@ -349,7 +369,7 @@ impl Orders {
     /// Store a card in the next slot. It starts armed, so it fires on the next
     /// tick if its triggers already hold.
     pub fn add(&mut self, order: StandingOrder, colony: &Colony) -> Result<usize, OrderError> {
-        if self.cards.len() >= usize::from(self.tuning.memory) {
+        if self.is_full() {
             return Err(OrderError::MemoryFull {
                 memory: self.tuning.memory,
             });
@@ -452,9 +472,15 @@ fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
 
 /// Centi-degrees as degrees C with one decimal place, rounding half away from zero.
 pub fn format_centi_c(centi_c: i32) -> String {
-    let deci = (i64::from(centi_c).abs() + 5) / 10;
-    let sign = if centi_c < 0 && deci != 0 { "-" } else { "" };
-    format!("{sign}{}.{}C", deci / 10, deci % 10)
+    const TENTHS_PER_DEGREE: i64 = 10;
+    let centi_per_tenth = i64::from(CENTI_PER_DEGREE) / TENTHS_PER_DEGREE;
+    let tenths = (i64::from(centi_c).abs() + centi_per_tenth / 2) / centi_per_tenth;
+    let sign = if centi_c < 0 && tenths != 0 { "-" } else { "" };
+    format!(
+        "{sign}{}.{}C",
+        tenths / TENTHS_PER_DEGREE,
+        tenths % TENTHS_PER_DEGREE
+    )
 }
 
 #[cfg(test)]
@@ -539,6 +565,15 @@ mod tests {
             order.render(),
             "IF hab_01.temp < -5.0C AND hab_02.temp > 14.5C \
              THEN activate heater_02 AND share heat ON hab_01"
+        );
+    }
+
+    #[test]
+    fn an_empty_side_renders_as_a_placeholder() {
+        assert_eq!(card(1, vec![], vec![]).render(), "IF ... THEN ...");
+        assert_eq!(
+            card(1, vec![], vec![Action::Activate(id("heater_02"))]).render(),
+            "IF ... THEN activate heater_02"
         );
     }
 

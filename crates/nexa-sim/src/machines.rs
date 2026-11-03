@@ -23,6 +23,18 @@ pub enum MachineState {
     Offline,
 }
 
+impl MachineState {
+    pub fn label(self) -> &'static str {
+        match self {
+            MachineState::Nominal => "nominal",
+            MachineState::Overheat => "overheat",
+            MachineState::Freeze => "freeze",
+            MachineState::Burnout => "burnout",
+            MachineState::Offline => "offline",
+        }
+    }
+}
+
 /// The temperature range, in centi-degrees Celsius, where a machine runs at 0% wear.
 ///
 /// Fields are private so min <= max holds however a band is built, including
@@ -125,6 +137,8 @@ pub struct Machine {
 /// Wear at which a machine fails: 100.00%.
 pub const MAX_WEAR_BP: u16 = 10_000;
 
+const BP_PER_PERCENT: u16 = 100;
+
 /// Unvalidated wire form of [`Machine`]; serde checks it via `TryFrom`.
 #[derive(Deserialize)]
 struct RawMachine {
@@ -191,6 +205,11 @@ impl Machine {
         self.wear_bp
     }
 
+    /// Wear in whole percent, rounded down.
+    pub fn wear_percent(&self) -> u16 {
+        self.wear_bp / BP_PER_PERCENT
+    }
+
     pub fn tolerance(&self) -> ToleranceBand {
         self.tolerance
     }
@@ -243,16 +262,6 @@ impl Machine {
     pub fn repair(&mut self) {
         self.wear_bp = 0;
         self.state = self.tolerance.classify(self.temp_centi_c);
-    }
-
-    /// Sustained overheat destroys the heating filament (architecture.md, machines module).
-    pub fn burnout(&mut self) {
-        self.state = MachineState::Burnout;
-    }
-
-    /// Sustained freeze cracks the seal and takes the machine offline.
-    pub fn take_offline(&mut self) {
-        self.state = MachineState::Offline;
     }
 }
 
@@ -310,8 +319,8 @@ mod tests {
 
     #[test]
     fn burnout_is_sticky_until_repaired() {
-        let mut m = Machine::new(band(), 0);
-        m.burnout();
+        let mut m = Machine::new(band(), 9000);
+        m.wear_for_an_hour(MAX_WEAR_BP);
         assert_eq!(m.state(), MachineState::Burnout);
 
         m.set_temperature(0); // back in nominal range, but still burned out
@@ -320,8 +329,8 @@ mod tests {
 
     #[test]
     fn offline_is_sticky_until_repaired() {
-        let mut m = Machine::new(band(), 0);
-        m.take_offline();
+        let mut m = Machine::new(band(), -600);
+        m.wear_for_an_hour(MAX_WEAR_BP);
         assert_eq!(m.state(), MachineState::Offline);
 
         m.set_temperature(0);
@@ -364,6 +373,12 @@ mod tests {
     }
 
     #[test]
+    fn wear_percent_rounds_down() {
+        let m = Machine::new(band(), 0).with_wear(4599);
+        assert_eq!(m.wear_percent(), 45);
+    }
+
+    #[test]
     fn healthy_machines_need_no_part() {
         assert_eq!(Machine::new(band(), 0).part_needed(), None);
     }
@@ -390,8 +405,8 @@ mod tests {
 
     #[test]
     fn failed_state_survives_a_save_round_trip() {
-        let mut m = Machine::new(band(), 0);
-        m.burnout();
+        let mut m = Machine::new(band(), 9000);
+        m.wear_for_an_hour(MAX_WEAR_BP);
         let saved = ron::to_string(&m).unwrap();
         let loaded: Machine = ron::from_str(&saved).unwrap();
         assert_eq!(loaded, m);

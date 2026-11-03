@@ -20,6 +20,15 @@ const COLS: usize = 80;
 /// Tall enough for the 32-row map plus a header and key-help row inside the frame.
 const ROWS: usize = 36;
 
+/// Columns between the frame and text on every screen.
+const MARGIN: usize = 2;
+const TITLE_ROW: usize = 1;
+/// Key help sits on the last row inside the frame.
+const HELP_ROW: usize = ROWS - 2;
+const BOOT_COL: usize = 4;
+const BOOT_ROW: usize = 3;
+const BOOT_PROMPT_ROW: usize = ROWS - 5;
+
 /// Log lines kept for the base log; more than the screen shows.
 const LOG_CAPACITY: usize = 64;
 
@@ -133,10 +142,14 @@ impl App {
                 let shown = ((get_time() - *started) / BOOT_LINE_DELAY) as usize;
                 for (i, line) in BOOT_LINES.iter().take(shown).enumerate() {
                     let ink = if i == 0 { Ink::Bright } else { Ink::Amber };
-                    t.put_str(4, 3 + i, line, ink);
+                    t.put_str(BOOT_COL, BOOT_ROW + i, line, ink);
                 }
                 if shown > BOOT_LINES.len() && blink {
-                    t.put_centered(ROWS - 5, "PRESS ANY KEY TO BOOT TERMINAL", Ink::Bright);
+                    t.put_centered(
+                        BOOT_PROMPT_ROW,
+                        "PRESS ANY KEY TO BOOT TERMINAL",
+                        Ink::Bright,
+                    );
                 }
             }
             Screen::Online => {
@@ -153,10 +166,10 @@ impl App {
                 );
                 colony_view::draw_map(t, &self.world.colony, blink);
                 let next = colony_view::draw_status(t, &self.world.colony, colony_view::MAP_ROW);
-                colony_view::draw_log(t, self.log.iter(), next + 1, ROWS - 2);
+                colony_view::draw_log(t, self.log.iter(), next + 1, HELP_ROW);
                 t.put_str(
-                    2,
-                    ROWS - 2,
+                    MARGIN,
+                    HELP_ROW,
                     "[SPACE] PAUSE   [1] [2] [3] SPEED   [O] STANDING ORDERS   [ESC] SHUT DOWN",
                     Ink::Dim,
                 );
@@ -164,7 +177,7 @@ impl App {
             Screen::Orders(editor) => {
                 let title = "MULLEIN SYSTEMS // CARETAKER TERMINAL";
                 draw_title(t, title, self.world.now, "HELD");
-                editor.draw(t, &self.world, ROWS - 2);
+                editor.draw(t, &self.world, HELP_ROW);
             }
         }
         t.draw();
@@ -173,14 +186,14 @@ impl App {
 
 /// Title on the left; the clock right-aligned inside the frame so it never runs into the title.
 fn draw_title(t: &mut Terminal, title: &str, now: Tick, status: &str) {
-    t.put_str(2, 1, title, Ink::Bright);
+    t.put_str(MARGIN, TITLE_ROW, title, Ink::Bright);
     let clock = format!(
         "SOL {:03}  HOUR {:02}  {status}",
         now.sol(),
         now.hour_of_sol()
     );
-    let clock_col = COLS.saturating_sub(2 + clock.chars().count());
-    t.put_str(clock_col, 1, &clock, Ink::Amber);
+    let clock_col = COLS.saturating_sub(MARGIN + clock.chars().count());
+    t.put_str(clock_col, TITLE_ROW, &clock, Ink::Amber);
 }
 
 fn window_conf() -> Conf {

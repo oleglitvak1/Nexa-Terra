@@ -3,7 +3,7 @@
 use crate::terminal::{Ink, Terminal};
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::grid::Tile;
-use nexa_sim::machines::MachineState;
+use nexa_sim::orders::format_centi_c;
 use nexa_sim::SimEvent;
 use nexa_types::Tick;
 
@@ -11,36 +11,27 @@ pub const MAP_COL: usize = 2;
 pub const MAP_ROW: usize = 2;
 pub const PANEL_COL: usize = 36;
 const POWER_BAR_WIDTH: usize = 20;
+/// Below this the grid power bar draws bright as a warning.
+const LOW_POWER_PERCENT: usize = 25;
 
-/// "+14.0C" from centi-degrees, in integer math.
+/// "+14.0C": the orders terminal's rounding, with an explicit sign so the column lines up.
 pub fn fmt_temp(centi_c: i32) -> String {
-    let sign = if centi_c < 0 { '-' } else { '+' };
-    let abs = centi_c.unsigned_abs();
-    format!("{sign}{}.{}C", abs / 100, abs % 100 / 10)
-}
-
-fn state_label(state: MachineState) -> &'static str {
-    match state {
-        MachineState::Nominal => "NOMINAL",
-        MachineState::Overheat => "OVERHEAT",
-        MachineState::Freeze => "FREEZE",
-        MachineState::Burnout => "BURNOUT",
-        MachineState::Offline => "OFFLINE",
+    let text = format_centi_c(centi_c);
+    if text.starts_with('-') {
+        text
+    } else {
+        format!("+{text}")
     }
-}
-
-fn failed(m: &Module) -> bool {
-    m.machine().is_some_and(|machine| machine.is_failed())
 }
 
 /// The POWER column: battery charge, generator output, or a consumer's supply.
 pub fn power_label(m: &Module) -> String {
     let def = m.def();
-    if !m.active() && (def.output_kw > 0 || def.draw_kw > 0 || def.battery.is_some()) {
+    if !m.active() && def.uses_power() {
         "OFF".into()
     } else if let Some(b) = def.battery {
         format!("{}/{}", m.charge_kwh(), b.capacity_kwh)
-    } else if failed(m) {
+    } else if m.failed() {
         "--".into()
     } else if def.output_kw > 0 {
         format!("+{}kW", def.output_kw)
@@ -52,23 +43,22 @@ pub fn power_label(m: &Module) -> String {
 }
 
 pub fn log_line(at: Tick, event: &SimEvent) -> String {
-    let stamp = format!("S{:03} H{:02}", at.sol(), at.hour_of_sol());
     // Cards show 1-based, as the terminal numbers its slots.
     match event {
         SimEvent::SolStarted { sol } => format!("SOL {sol:03} BEGINS"),
         SimEvent::MachineStateChanged { module, state } => format!(
-            "{stamp} {} {}",
+            "{at} {} {}",
             module.as_str().to_uppercase(),
-            state_label(*state)
+            state.label().to_uppercase()
         ),
-        SimEvent::OrderFired { slot, .. } => format!("{stamp} ORDER {} FIRED", slot + 1),
+        SimEvent::OrderFired { slot, .. } => format!("{at} ORDER {} FIRED", slot + 1),
         // The module, not the whole action: the full text overflows the log panel.
         SimEvent::OrderActionSkipped {
             slot,
             action,
             reason,
         } => format!(
-            "{stamp} ORDER {} {} {}",
+            "{at} ORDER {} {} {}",
             slot + 1,
             reason.label().to_uppercase(),
             action.module().as_str().to_uppercase()
@@ -94,7 +84,7 @@ pub fn draw_map(t: &mut Terminal, colony: &Colony, blink: bool) {
                 Tile::Module(i) => {
                     let m = &colony.modules()[i];
                     let glyph = m.def().glyph;
-                    if failed(m) {
+                    if m.failed() {
                         (if blink { glyph } else { ' ' }, Ink::Bright)
                     } else if m.running() {
                         (glyph, Ink::Bright)
@@ -117,7 +107,11 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
         "#".repeat(filled),
         "-".repeat(POWER_BAR_WIDTH - filled)
     );
-    let bar_ink = if pct < 25 { Ink::Bright } else { Ink::Amber };
+    let bar_ink = if pct < LOW_POWER_PERCENT {
+        Ink::Bright
+    } else {
+        Ink::Amber
+    };
     t.put_str(PANEL_COL, top, &bar, bar_ink);
 
     let header = format!(
@@ -129,11 +123,11 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
     for m in colony.modules() {
         let (state, temp, wear) = match m.machine() {
             Some(machine) => (
-                state_label(machine.state()),
+                machine.state().label().to_uppercase(),
                 fmt_temp(m.temp_centi_c()),
-                format!("{}%", machine.wear_bp() / 100),
+                format!("{}%", machine.wear_percent()),
             ),
-            None => ("--", String::new(), "--".into()),
+            None => ("--".into(), String::new(), "--".into()),
         };
         let line = format!(
             "{:<12}{:<9}{:>7} {:>4}  {}",
@@ -143,7 +137,7 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
             wear,
             power_label(m)
         );
-        let ink = if failed(m) {
+        let ink = if m.failed() {
             Ink::Bright
         } else if m.active() {
             Ink::Amber
@@ -174,15 +168,23 @@ pub fn draw_log<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexa_sim::machines::MachineState;
     use nexa_sim::World;
     use nexa_types::{Command, ModuleId};
 
     #[test]
     fn temps_format_with_one_decimal_and_a_sign() {
         assert_eq!(fmt_temp(1400), "+14.0C");
-        assert_eq!(fmt_temp(-405), "-4.0C");
         assert_eq!(fmt_temp(-4000), "-40.0C");
         assert_eq!(fmt_temp(0), "+0.0C");
+    }
+
+    // The orders terminal shows the same readings; both screens must agree.
+    #[test]
+    fn temps_round_like_the_orders_terminal() {
+        assert_eq!(fmt_temp(1455), "+14.6C");
+        assert_eq!(fmt_temp(-405), "-4.1C");
+        assert_eq!(fmt_temp(-4), "+0.0C");
     }
 
     #[test]

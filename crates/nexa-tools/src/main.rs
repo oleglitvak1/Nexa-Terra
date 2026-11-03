@@ -10,8 +10,11 @@ use nexa_sim::orders::OrdersDef;
 use nexa_sim::{SimEvent, World};
 use nexa_types::TICKS_PER_SOL;
 
+/// The vertical slice's length: the scrubbers' filter life.
+const DEFAULT_SOLS: u64 = 45;
+
 fn main() {
-    let mut sols: u64 = 45;
+    let mut sols = DEFAULT_SOLS;
     let mut preset: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -52,22 +55,17 @@ fn main() {
     let mut fires = vec![0u64; world.orders.len()];
     for _ in 0..sols * TICKS_PER_SOL {
         let now = world.now;
-        let stamp = format!("SOL {:03} H{:02}", now.sol(), now.hour_of_sol());
         for event in world.tick() {
             match event {
                 SimEvent::SolStarted { sol } => println!("[SIM] SOL {sol:03} BEGINS"),
                 SimEvent::MachineStateChanged { module, state } => {
-                    println!("[SIM] {stamp}  {module} -> {state:?}")
+                    println!("[SIM] {now}  {module} -> {}", state.label())
                 }
                 // Swinging heat between habs fires every couple of hours: list a
                 // card's first firing, count the rest.
                 SimEvent::OrderFired { slot, order } => {
                     if fires[slot] == 0 {
-                        println!(
-                            "[SIM] {stamp}  order {} fires: {}",
-                            slot + 1,
-                            order.render()
-                        );
+                        println!("[SIM] {now}  order {} fires: {}", slot + 1, order.render());
                     }
                     fires[slot] += 1;
                 }
@@ -76,7 +74,7 @@ fn main() {
                     action,
                     reason,
                 } => println!(
-                    "[SIM] {stamp}  order {} {}: {}",
+                    "[SIM] {now}  order {} {}: {}",
                     slot + 1,
                     reason.label(),
                     action.render()
@@ -98,9 +96,9 @@ fn main() {
             println!(
                 "[SIM]   {:<12} {:<9} {:>6} centi-C  wear {:>3}%",
                 m.id().as_str(),
-                format!("{:?}", machine.state()),
+                machine.state().label(),
                 m.temp_centi_c(),
-                machine.wear_bp() / 100
+                machine.wear_percent()
             );
         }
     }

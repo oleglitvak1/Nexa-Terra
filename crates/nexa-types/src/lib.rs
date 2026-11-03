@@ -12,6 +12,9 @@ pub const HOURS_PER_SOL: u64 = 26;
 /// One simulation tick is one planetary hour.
 pub const TICKS_PER_SOL: u64 = HOURS_PER_SOL;
 
+/// Temperatures are whole hundredths of a degree C everywhere (`*_centi_c`).
+pub const CENTI_PER_DEGREE: i32 = 100;
+
 /// Absolute simulation time, counted in ticks (planetary hours) since landfall.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
@@ -27,6 +30,13 @@ impl Tick {
     /// The hour within the current Sol, 0..HOURS_PER_SOL.
     pub fn hour_of_sol(self) -> u64 {
         self.0 % TICKS_PER_SOL
+    }
+}
+
+/// Compact log stamp, e.g. `S001 H02`.
+impl std::fmt::Display for Tick {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "S{:03} H{:02}", self.sol(), self.hour_of_sol())
     }
 }
 
@@ -78,5 +88,10 @@ mod tests {
         assert_eq!(Tick(25).sol(), 0);
         assert_eq!(Tick(26).sol(), 1);
         assert_eq!(Tick(27).hour_of_sol(), 1);
+    }
+
+    #[test]
+    fn tick_displays_as_a_log_stamp() {
+        assert_eq!(Tick(27).to_string(), "S001 H01");
     }
 }
