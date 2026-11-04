@@ -13,6 +13,7 @@ use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
 use serde::{Deserialize, Serialize};
 
 pub mod colony;
+pub mod crew;
 pub mod grid;
 pub mod machines;
 pub mod orders;

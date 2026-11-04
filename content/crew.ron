@@ -1,0 +1,57 @@
+// Nexa Terra: the crew of the vertical slice and their stress/morale tuning.
+//
+// Skills are rated 0..=5; a missing skill is 0. Stress and morale are basis
+// points, 0..=10000. One hour is one tick; 26 hours make a Sol.
+(
+    tuning: (
+        // Rated 4 is a professional pilot: only Cal can fly the freighter.
+        pilot_min: 4,
+        // A cold or failed bunk takes a calm crew member (0) to strained in
+        // about a Sol and a half and to breaking in about two Sols.
+        stress_rise_cold_bp: 160,
+        // A third of the rise: losing a bunk for a day costs three days to undo.
+        stress_recover_bp: 55,
+        // Father's Vigilance: Maya's bunk going cold hits Jonathan harder than
+        // his own would, so he breaks in about a Sol.
+        vigilance_extra_bp: 150,
+        calm_bp: 2500,
+        strained_bp: 5000,
+        breaking_bp: 8000,
+        // Morale moves slower than stress and recovers slower still.
+        morale_fall_bp: 60,
+        morale_recover_bp: 25,
+    ),
+    // The Winter family shares the damaged hab_01; the others take hab_02.
+    crew: [
+        (
+            id: "jonathan", name: "Dr. Jonathan Winter", adult: true,
+            skills: { Engineering: 5, Piloting: 2, Astrogation: 2 },
+            dynamic: FathersVigilance, bunk: "hab_01",
+        ),
+        (
+            id: "elena", name: "Dr. Elena Winter", adult: true,
+            skills: { Medicine: 5, Engineering: 1 },
+            dynamic: HippocraticAnchor, bunk: "hab_01",
+        ),
+        (
+            id: "maya", name: "Maya Winter", adult: false,
+            skills: { Sensors: 3, Rigging: 1 },
+            dynamic: LivingCompass, bunk: "hab_01",
+        ),
+        (
+            id: "cal", name: "Capt. Cal Callahan", adult: true,
+            skills: { Piloting: 5, Rigging: 3, Sensors: 2 },
+            dynamic: CombatFatigue, bunk: "hab_02",
+        ),
+        (
+            id: "oron", name: "Oron-3", adult: true,
+            skills: { Astrogation: 5, Sensors: 3 },
+            dynamic: ClinicalDetachment, bunk: "hab_02",
+        ),
+        (
+            id: "dax", name: "Dax Thorne", adult: true,
+            skills: { Negotiation: 5, Rigging: 3, Piloting: 3 },
+            dynamic: FlightRisk, bunk: "hab_02",
+        ),
+    ],
+)

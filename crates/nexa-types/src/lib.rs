@@ -61,6 +61,27 @@ impl std::fmt::Display for ModuleId {
     }
 }
 
+/// Stable name of a crew member, as written in content files (e.g. `maya`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CrewId(pub String);
+
+impl CrewId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CrewId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Something the player (or a Standing Order) asks the colony to do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
@@ -93,5 +114,12 @@ mod tests {
     #[test]
     fn tick_displays_as_a_log_stamp() {
         assert_eq!(Tick(27).to_string(), "S001 H01");
+    }
+
+    #[test]
+    fn crew_id_displays_its_name() {
+        let id = CrewId::new("maya");
+        assert_eq!(id.as_str(), "maya");
+        assert_eq!(id.to_string(), "maya");
     }
 }
