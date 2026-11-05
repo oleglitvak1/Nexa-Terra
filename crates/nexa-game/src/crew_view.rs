@@ -34,7 +34,7 @@ fn flipped(side: Assignment) -> Assignment {
     }
 }
 
-fn skill_label(skill: Skill) -> &'static str {
+pub fn skill_label(skill: Skill) -> &'static str {
     match skill {
         Skill::Piloting => "PILOTING",
         Skill::Engineering => "ENGINEERING",
