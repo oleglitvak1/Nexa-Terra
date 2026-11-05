@@ -201,6 +201,25 @@ fn log_event(now: Tick, event: &SimEvent, fires: &mut [u64]) {
         SimEvent::CrewStressChanged { crew, level } => {
             println!("[SIM] {now}  {crew} is {}", level.label())
         }
+        SimEvent::Launched {
+            destination,
+            flight,
+            fuel_burned_l,
+        } => {
+            let names: Vec<_> = flight.iter().map(|c| c.as_str()).collect();
+            println!(
+                "[SIM] {now}  launched for {destination}, burned {fuel_burned_l} L, aboard: {}",
+                names.join(", ")
+            )
+        }
+        SimEvent::SlipSolPassed { sol, of } => println!("[SLIP] sol {sol} of {of}"),
+        SimEvent::HazardEncountered { hazard } => println!("[SLIP] hazard: {hazard}"),
+        SimEvent::HazardResolved(r) => println!("[SLIP] {} -> {}", r.option, r.outcome.label()),
+        SimEvent::Arrived {
+            destination,
+            sols,
+            delay_sols,
+        } => println!("[SLIP] holding over {destination} after {sols} Sols (+{delay_sols} delay)"),
     }
 }
 

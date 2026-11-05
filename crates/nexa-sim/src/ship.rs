@@ -231,7 +231,6 @@ impl Ship {
     }
 
     /// Burn up to `liters`; returns what was burned.
-    #[cfg_attr(not(test), allow(dead_code))] // flight uses it from step 7
     pub(crate) fn burn(&mut self, liters: u32) -> u32 {
         let burned = liters.min(self.fuel_l);
         self.fuel_l -= burned;
@@ -239,7 +238,6 @@ impl Ship {
     }
 
     /// Spend up to `n` pods; returns how many were spent.
-    #[cfg_attr(not(test), allow(dead_code))] // flight uses it from step 7
     pub(crate) fn spend_pods(&mut self, n: u8) -> u8 {
         let spent = n.min(self.pods);
         self.pods -= spent;
@@ -247,7 +245,6 @@ impl Ship {
     }
 
     /// Jettison up to `n` crates from the end of the hold; returns their mass.
-    #[cfg_attr(not(test), allow(dead_code))] // flight uses it from step 7
     pub(crate) fn dump_crates(&mut self, n: u32) -> (u32, u32) {
         let keep = self.cargo.len().saturating_sub(n as usize);
         let dumped: Vec<OreCrate> = self.cargo.drain(keep..).collect();
@@ -255,14 +252,12 @@ impl Ship {
     }
 
     /// Every crate loses `pct` points of integrity.
-    #[cfg_attr(not(test), allow(dead_code))] // flight uses it from step 7
     pub(crate) fn damage_cargo(&mut self, pct: u8) {
         for c in &mut self.cargo {
             c.integrity_pct = c.integrity_pct.saturating_sub(pct);
         }
     }
 
-    #[allow(dead_code)] // flight uses it from step 7
     pub(crate) fn set_location(&mut self, location: ShipLocation) {
         self.location = location;
     }

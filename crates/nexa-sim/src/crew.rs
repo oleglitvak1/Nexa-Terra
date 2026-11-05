@@ -284,6 +284,8 @@ pub enum SplitError {
     MayaWithoutAdult { child: CrewId },
     /// An assignment names someone who isn't in the crew.
     UnknownCrew(CrewId),
+    /// The Mullein is away: who's aboard can't change until she lands.
+    ShipAway,
 }
 
 impl std::fmt::Display for SplitError {
@@ -294,6 +296,7 @@ impl std::fmt::Display for SplitError {
                 write!(f, "{child} has no adult on their side")
             }
             SplitError::UnknownCrew(id) => write!(f, "no crew member named {id}"),
+            SplitError::ShipAway => write!(f, "the mullein is away; the split holds"),
         }
     }
 }

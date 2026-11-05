@@ -8,17 +8,19 @@
 
 use colony::{Colony, CommandError, LANDING_ASH_PLAIN};
 use crew::{Assignment, Crew, CrewError, Roster, SplitError, StressLevel};
+use flight::{Resolution, Voyage};
 use machines::MachineState;
-use nexa_types::{Command, CrewId, ModuleId, Tick, TICKS_PER_SOL};
+use nexa_types::{Command, CrewId, HazardId, ModuleId, StationId, Tick, TICKS_PER_SOL};
 use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
 use rng::SimRng;
 use serde::{Deserialize, Serialize};
-use ship::{Ship, ShipDef, ShipError};
+use ship::{Ship, ShipDef, ShipError, ShipLocation};
 use std::collections::BTreeMap;
 
 pub mod check;
 pub mod colony;
 pub mod crew;
+pub mod flight;
 pub mod grid;
 pub mod hazards;
 pub mod machines;
@@ -45,6 +47,9 @@ pub struct World {
     pub ship: Ship,
     /// The colony's purse, in whole credits.
     pub credits: u32,
+    /// The trip through The Slip, from launch on; driven through
+    /// [`World::advance_voyage`] and [`World::resolve_hazard`].
+    pub voyage: Option<Voyage>,
 }
 
 /// Unchecked wire form of [`World`]; serde checks it via `TryFrom`.
@@ -67,6 +72,9 @@ struct RawWorld {
     /// ... and the shipped starting credits.
     #[serde(default, deserialize_with = "present")]
     credits: Option<u32>,
+    /// Saves from before The Slip have no voyage.
+    #[serde(default)]
+    voyage: Option<Voyage>,
 }
 
 /// Reads a field that `World` writes bare, not as an RON `Some(..)`.
@@ -84,6 +92,7 @@ pub enum LoadError {
     Orders(OrderError),
     Crew(CrewError),
     Ship(ShipError),
+    Voyage(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -92,6 +101,7 @@ impl std::fmt::Display for LoadError {
             LoadError::Orders(e) => write!(f, "standing orders: {e}"),
             LoadError::Crew(e) => write!(f, "crew: {e}"),
             LoadError::Ship(e) => write!(f, "ship: {e}"),
+            LoadError::Voyage(e) => write!(f, "voyage: {e}"),
         }
     }
 }
@@ -116,6 +126,15 @@ impl TryFrom<RawWorld> for World {
         crew.check(&colony).map_err(LoadError::Crew)?;
         let ship = raw.ship.unwrap_or_default();
         ship.check().map_err(LoadError::Ship)?;
+        match &raw.voyage {
+            Some(voyage) => voyage
+                .check(&ship, crew.roster())
+                .map_err(LoadError::Voyage)?,
+            None if ship.location() != &ShipLocation::Pad => {
+                return Err(LoadError::Voyage("the ship is away with no voyage".into()))
+            }
+            None => {}
+        }
         let credits = raw.credits.unwrap_or(ShipDef::shipped().starting_credits);
         Ok(Self {
             now: raw.now,
@@ -125,6 +144,7 @@ impl TryFrom<RawWorld> for World {
             rng: raw.rng,
             ship,
             credits,
+            voyage: raw.voyage,
         })
     }
 }
@@ -133,13 +153,18 @@ impl TryFrom<RawWorld> for World {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SimEvent {
     /// A new Sol has begun.
-    SolStarted { sol: u64 },
+    SolStarted {
+        sol: u64,
+    },
     MachineStateChanged {
         module: ModuleId,
         state: MachineState,
     },
     /// A Standing Order's triggers all held; its actions follow as their own events.
-    OrderFired { slot: usize, order: StandingOrder },
+    OrderFired {
+        slot: usize,
+        order: StandingOrder,
+    },
     /// One action of a fired card did nothing.
     OrderActionSkipped {
         slot: usize,
@@ -147,9 +172,36 @@ pub enum SimEvent {
         reason: SkipReason,
     },
     /// A Split passed its rules and is now the crew's assignments.
-    SplitConfirmed { flight: Vec<CrewId> },
+    SplitConfirmed {
+        flight: Vec<CrewId>,
+    },
     /// A crew member's stress reached a new level.
-    CrewStressChanged { crew: CrewId, level: StressLevel },
+    CrewStressChanged {
+        crew: CrewId,
+        level: StressLevel,
+    },
+    /// The Mullein left the pad for The Slip.
+    Launched {
+        destination: StationId,
+        flight: Vec<CrewId>,
+        fuel_burned_l: u32,
+    },
+    /// One Sol of the leg flown, of `of` (which grows with delays).
+    SlipSolPassed {
+        sol: u32,
+        of: u32,
+    },
+    /// A hazard is waiting on a choice.
+    HazardEncountered {
+        hazard: HazardId,
+    },
+    HazardResolved(Resolution),
+    /// The leg is over; the ship holds over the station.
+    Arrived {
+        destination: StationId,
+        sols: u32,
+        delay_sols: u32,
+    },
 }
 
 impl World {
@@ -164,6 +216,7 @@ impl World {
             rng: SimRng::default(),
             ship: Ship::default(),
             credits: ShipDef::shipped().starting_credits,
+            voyage: None,
         }
     }
 
@@ -185,7 +238,11 @@ impl World {
     }
 
     /// Advance the simulation by one fixed step (one planetary hour).
+    /// Held while a voyage is in transit: arrival catches the colony up.
     pub fn tick(&mut self) -> Vec<SimEvent> {
+        if self.voyage.as_ref().is_some_and(Voyage::in_transit) {
+            return Vec::new();
+        }
         // The Caretaker reads the gauges and acts, then the hour runs.
         let mut events = self.orders.evaluate(&mut self.colony);
         events.extend(self.colony.tick());
@@ -221,11 +278,15 @@ impl World {
     }
 
     /// Decide who flies. Crew left out of `assignments` stay on the Ground; a
-    /// refused Split leaves the current one in place. Launch is milestone 5.
+    /// refused Split leaves the current one in place, and so does any Split
+    /// while the ship is away.
     pub fn confirm_split(
         &mut self,
         assignments: &BTreeMap<CrewId, Assignment>,
     ) -> Result<Vec<SimEvent>, SplitError> {
+        if self.ship.location() != &ShipLocation::Pad {
+            return Err(SplitError::ShipAway);
+        }
         let flight = self.crew.confirm_split(assignments)?;
         Ok(vec![SimEvent::SplitConfirmed { flight }])
     }

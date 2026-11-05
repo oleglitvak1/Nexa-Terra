@@ -72,6 +72,30 @@ pub fn log_line(at: Tick, event: &SimEvent) -> String {
             crew.as_str().to_uppercase(),
             level.label().to_uppercase()
         ),
+        SimEvent::Launched {
+            destination,
+            flight,
+            ..
+        } => format!(
+            "{at} MULLEIN LAUNCHED FOR {} {} ABOARD",
+            destination.as_str().to_uppercase(),
+            flight.len()
+        ),
+        SimEvent::SlipSolPassed { sol, of } => format!("SLIP SOL {sol}/{of}"),
+        SimEvent::HazardEncountered { hazard } => {
+            format!("{at} HAZARD {}", hazard.as_str().to_uppercase())
+        }
+        SimEvent::HazardResolved(r) => format!(
+            "{at} {} {}",
+            r.option.to_uppercase(),
+            r.outcome.label().to_uppercase()
+        ),
+        SimEvent::Arrived {
+            destination, sols, ..
+        } => format!(
+            "{at} HOLDING OVER {} AFTER {sols} SOLS",
+            destination.as_str().to_uppercase()
+        ),
     }
 }
 
