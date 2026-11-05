@@ -79,6 +79,10 @@ fn main() {
                     reason.label(),
                     action.render()
                 ),
+                SimEvent::SplitConfirmed { flight } => {
+                    let names: Vec<_> = flight.iter().map(|c| c.as_str()).collect();
+                    println!("[SIM] {now}  split confirmed, flying: {}", names.join(", "))
+                }
             }
         }
     }

@@ -2,6 +2,7 @@
 //! Split rules for who flies and who stays on the ground.
 //!
 //! Stress and morale tuning is loaded and checked here; nothing steps it yet.
+//! [`Crew`] is the part of the world that holds them and the confirmed Split.
 
 use crate::colony::{Colony, Module, ModuleKind};
 use nexa_types::{CrewId, ModuleId};
@@ -158,6 +159,10 @@ pub enum CrewError {
         field: &'static str,
         bp: u16,
     },
+    /// A saved Split doesn't give exactly one side to each crew member.
+    SplitMismatch,
+    /// A saved Split breaks the Split rules.
+    BadSplit(SplitError),
 }
 
 impl std::fmt::Display for CrewError {
@@ -188,6 +193,10 @@ impl std::fmt::Display for CrewError {
             CrewError::RateOutOfRange { field, bp } => {
                 write!(f, "{field} is {bp}, above {MAX_BP}")
             }
+            CrewError::SplitMismatch => {
+                write!(f, "the saved Split doesn't list exactly the crew")
+            }
+            CrewError::BadSplit(e) => write!(f, "the saved Split is refused: {e}"),
         }
     }
 }
@@ -314,6 +323,85 @@ pub fn check_split(
         }
     }
     Ok(())
+}
+
+/// The crew aboard a world: their content and the side each is on.
+/// Fields are private so a `Crew` is only built checked (or loaded and then
+/// checked by `World`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Crew {
+    roster: Roster,
+    /// One entry per crew member; all Ground until a Split is confirmed.
+    assignments: BTreeMap<CrewId, Assignment>,
+}
+
+impl Crew {
+    /// Everyone starts on the Ground.
+    pub fn new(roster: Roster) -> Self {
+        let assignments = roster
+            .crew
+            .iter()
+            .map(|c| (c.id.clone(), Assignment::Ground))
+            .collect();
+        Self {
+            roster,
+            assignments,
+        }
+    }
+
+    pub fn roster(&self) -> &Roster {
+        &self.roster
+    }
+
+    pub fn members(&self) -> &[CrewMember] {
+        &self.roster.crew
+    }
+
+    pub fn assignment(&self, id: &CrewId) -> Option<Assignment> {
+        self.assignments.get(id).copied()
+    }
+
+    /// Check the Split and, if it passes, make it the crew's assignments.
+    /// Crew left out of `assignments` go to the Ground. Returns who flies,
+    /// in roster order.
+    pub fn confirm_split(
+        &mut self,
+        assignments: &BTreeMap<CrewId, Assignment>,
+    ) -> Result<Vec<CrewId>, SplitError> {
+        check_split(&self.roster.crew, &self.roster.tuning, assignments)?;
+        for (id, side) in &mut self.assignments {
+            *side = assignments.get(id).copied().unwrap_or_default();
+        }
+        Ok(self
+            .roster
+            .crew
+            .iter()
+            .filter(|c| self.assignments[&c.id] == Assignment::Flight)
+            .map(|c| c.id.clone())
+            .collect())
+    }
+
+    /// What a loaded save must satisfy: valid content for `colony`, one side
+    /// per crew member, and either nobody flying or a Split that passes.
+    pub fn check(&self, colony: &Colony) -> Result<(), CrewError> {
+        self.roster.check(colony)?;
+        // Roster ids are unique, so equal counts plus containment is an exact match.
+        let every_member_listed = self.assignments.len() == self.roster.crew.len()
+            && self
+                .roster
+                .crew
+                .iter()
+                .all(|c| self.assignments.contains_key(&c.id));
+        if !every_member_listed {
+            return Err(CrewError::SplitMismatch);
+        }
+        let anyone_flying = self.assignments.values().any(|&a| a == Assignment::Flight);
+        if anyone_flying {
+            check_split(&self.roster.crew, &self.roster.tuning, &self.assignments)
+                .map_err(CrewError::BadSplit)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

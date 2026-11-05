@@ -7,10 +7,12 @@
 //! - Must compile for `wasm32-unknown-unknown`.
 
 use colony::{Colony, CommandError, LANDING_ASH_PLAIN};
+use crew::{Assignment, Crew, CrewError, Roster, SplitError};
 use machines::MachineState;
-use nexa_types::{Command, ModuleId, Tick, TICKS_PER_SOL};
+use nexa_types::{Command, CrewId, ModuleId, Tick, TICKS_PER_SOL};
 use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub mod colony;
 pub mod crew;
@@ -28,6 +30,8 @@ pub struct World {
     pub colony: Colony,
     /// Standing Orders; add cards through [`World::add_order`] so they're checked.
     pub orders: Orders,
+    /// Change the Split through [`World::confirm_split`] so it's checked.
+    pub crew: Crew,
 }
 
 /// Unchecked wire form of [`World`]; serde checks it via `TryFrom`.
@@ -38,17 +42,59 @@ struct RawWorld {
     /// Saves from before Standing Orders have none.
     #[serde(default)]
     orders: Orders,
+    /// Saves from before crew have none.
+    #[serde(default, deserialize_with = "present")]
+    crew: Option<Crew>,
 }
 
+/// Reads a field that `World` writes bare, not as an RON `Some(..)`.
+fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(d).map(Some)
+}
+
+/// Why a saved world was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadError {
+    Orders(OrderError),
+    Crew(CrewError),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Orders(e) => write!(f, "standing orders: {e}"),
+            LoadError::Crew(e) => write!(f, "crew: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
 impl TryFrom<RawWorld> for World {
-    type Error = OrderError;
+    type Error = LoadError;
 
     fn try_from(raw: RawWorld) -> Result<Self, Self::Error> {
-        raw.orders.check(&raw.colony)?;
+        let mut colony = raw.colony;
+        raw.orders.check(&colony).map_err(LoadError::Orders)?;
+        let crew = match raw.crew {
+            Some(crew) => crew,
+            None => {
+                // Pre-crew saves also predate ModuleKind, so their habs load as
+                // Utility and the shipped bunks would be refused.
+                colony.mark_legacy_habs();
+                Crew::new(Roster::shipped(&colony).map_err(LoadError::Crew)?)
+            }
+        };
+        crew.check(&colony).map_err(LoadError::Crew)?;
         Ok(Self {
             now: raw.now,
-            colony: raw.colony,
+            colony,
             orders: raw.orders,
+            crew,
         })
     }
 }
@@ -70,21 +116,29 @@ pub enum SimEvent {
         action: Action,
         reason: SkipReason,
     },
+    /// A Split passed its rules and is now the crew's assignments.
+    SplitConfirmed { flight: Vec<CrewId> },
 }
 
 impl World {
-    pub fn new(colony: Colony) -> Self {
+    /// A new world with no orders and everyone on the Ground.
+    /// `roster` must already be checked against `colony`.
+    pub fn new(colony: Colony, roster: Roster) -> Self {
         Self {
             now: Tick::default(),
             colony,
             orders: Orders::default(),
+            crew: Crew::new(roster),
         }
     }
 
     /// The vertical slice's start: landfall on the Ash Plain.
     pub fn landfall() -> Self {
-        // The shipped content is checked by colony's tests, so failing here is a build bug.
-        Self::new(Colony::from_ron(LANDING_ASH_PLAIN).expect("landing site content is valid"))
+        // The shipped content is checked by colony's and crew's tests, so failing
+        // here is a build bug.
+        let colony = Colony::from_ron(LANDING_ASH_PLAIN).expect("landing site content is valid");
+        let roster = Roster::shipped(&colony).expect("crew content is valid");
+        Self::new(colony, roster)
     }
 
     /// Advance the simulation by one fixed step (one planetary hour).
@@ -113,6 +167,16 @@ impl World {
     /// Take a Standing Order out of its slot; later cards move up.
     pub fn remove_order(&mut self, slot: usize) -> Result<StandingOrder, OrderError> {
         self.orders.remove(slot)
+    }
+
+    /// Decide who flies. Crew left out of `assignments` stay on the Ground; a
+    /// refused Split leaves the current one in place. Launch is milestone 5.
+    pub fn confirm_split(
+        &mut self,
+        assignments: &BTreeMap<CrewId, Assignment>,
+    ) -> Result<Vec<SimEvent>, SplitError> {
+        let flight = self.crew.confirm_split(assignments)?;
+        Ok(vec![SimEvent::SplitConfirmed { flight }])
     }
 }
 
@@ -233,6 +297,137 @@ mod tests {
             assert_eq!(a.tick(), b.tick());
         }
         assert_eq!(a, b);
+    }
+
+    fn split(flight: &[&str]) -> BTreeMap<CrewId, Assignment> {
+        flight
+            .iter()
+            .map(|id| (CrewId::new(*id), Assignment::Flight))
+            .collect()
+    }
+
+    fn flying(world: &World) -> Vec<&str> {
+        world
+            .crew
+            .members()
+            .iter()
+            .filter(|c| world.crew.assignment(&c.id) == Some(Assignment::Flight))
+            .map(|c| c.id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn landfall_has_the_shipped_crew_all_on_the_ground() {
+        let world = World::landfall();
+        assert_eq!(world.crew.members().len(), crew::CREW_SIZE);
+        assert_eq!(flying(&world), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn a_confirmed_split_is_recorded_and_announced() {
+        let mut world = World::landfall();
+        let events = world.confirm_split(&split(&["cal", "oron"])).unwrap();
+        assert_eq!(
+            events,
+            vec![SimEvent::SplitConfirmed {
+                flight: vec![CrewId::new("cal"), CrewId::new("oron")],
+            }]
+        );
+        assert_eq!(flying(&world), ["cal", "oron"]);
+        assert_eq!(
+            world.crew.assignment(&CrewId::new("maya")),
+            Some(Assignment::Ground)
+        );
+    }
+
+    #[test]
+    fn a_refused_split_changes_nothing() {
+        let mut world = World::landfall();
+        world.confirm_split(&split(&["cal"])).unwrap();
+        let before = world.clone();
+        let refusals = [
+            (split(&["dax"]), SplitError::NoQualifiedPilot),
+            (split(&[]), SplitError::NoQualifiedPilot),
+            (
+                split(&["cal", "jonathan", "elena", "oron", "dax"]),
+                SplitError::MayaWithoutAdult {
+                    child: CrewId::new("maya"),
+                },
+            ),
+            (
+                split(&["cal", "ghost"]),
+                SplitError::UnknownCrew(CrewId::new("ghost")),
+            ),
+        ];
+        for (assignments, err) in refusals {
+            assert_eq!(world.confirm_split(&assignments), Err(err));
+            assert_eq!(world, before);
+        }
+    }
+
+    #[test]
+    fn reconfirming_replaces_the_split() {
+        let mut world = World::landfall();
+        world
+            .confirm_split(&split(&["cal", "dax", "oron"]))
+            .unwrap();
+        // Crew left out of the new split go back to the Ground.
+        world.confirm_split(&split(&["cal"])).unwrap();
+        assert_eq!(flying(&world), ["cal"]);
+    }
+
+    #[test]
+    fn the_split_survives_a_save() {
+        let mut world = World::landfall();
+        world.confirm_split(&split(&["cal", "oron"])).unwrap();
+        let saved = ron::to_string(&world).unwrap();
+        assert_eq!(ron::from_str::<World>(&saved).unwrap(), world);
+    }
+
+    /// A save written before crew existed, and before modules had a `kind`.
+    fn pre_crew_save() -> String {
+        #[derive(Serialize)]
+        struct OldWorld<'a> {
+            now: Tick,
+            colony: &'a Colony,
+            orders: &'a Orders,
+        }
+        let world = World::landfall();
+        let old = ron::to_string(&OldWorld {
+            now: world.now,
+            colony: &world.colony,
+            orders: &world.orders,
+        })
+        .unwrap();
+        let stripped = old.replace("kind:Hab,", "").replace("kind:Utility,", "");
+        assert!(!stripped.contains("kind:"), "kind format changed: {old}");
+        stripped
+    }
+
+    #[test]
+    fn saves_from_before_crew_get_the_shipped_crew_and_their_habs() {
+        let loaded: World = ron::from_str(&pre_crew_save()).unwrap();
+        assert_eq!(loaded, World::landfall());
+    }
+
+    #[test]
+    fn a_save_with_a_bad_crew_is_rejected() {
+        let mut world = World::landfall();
+        world.confirm_split(&split(&["cal", "oron"])).unwrap();
+        let saved = ron::to_string(&world).unwrap();
+        let reject = |from: &str, to: &str| {
+            let edited = saved.replacen(from, to, 1);
+            assert_ne!(edited, saved, "{from} not in save");
+            assert!(ron::from_str::<World>(&edited).is_err(), "{from} -> {to}");
+        };
+        // A bunk that isn't a hab.
+        reject("bunk:\"hab_01\"", "bunk:\"smelter_01\"");
+        // An assignment for someone not in the crew.
+        reject("\"dax\":Ground", "\"ghost\":Ground");
+        // A crew member with no assignment.
+        reject("\"dax\":Ground,", "");
+        // A flight that breaks the Split rules: Oron-3 can't fly alone.
+        reject("\"cal\":Flight", "\"cal\":Ground");
     }
 
     fn hab_failures(events: &[SimEvent]) -> Vec<&SimEvent> {
