@@ -13,6 +13,7 @@ use nexa_types::{Command, CrewId, ModuleId, Tick, TICKS_PER_SOL};
 use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
 use rng::SimRng;
 use serde::{Deserialize, Serialize};
+use ship::{Ship, ShipDef, ShipError};
 use std::collections::BTreeMap;
 
 pub mod check;
@@ -23,6 +24,7 @@ pub mod machines;
 pub mod orders;
 pub mod parts;
 pub mod rng;
+pub mod ship;
 
 /// The whole state of one player's game. Grows milestone by milestone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +39,10 @@ pub struct World {
     pub crew: Crew,
     /// Every random roll the sim makes draws from here.
     pub rng: SimRng,
+    /// The Mullein; flown through [`World::launch`].
+    pub ship: Ship,
+    /// The colony's purse, in whole credits.
+    pub credits: u32,
 }
 
 /// Unchecked wire form of [`World`]; serde checks it via `TryFrom`.
@@ -53,6 +59,12 @@ struct RawWorld {
     /// Saves from before the RNG start from the fixed default seed.
     #[serde(default)]
     rng: SimRng,
+    /// Saves from before the ship get the shipped Mullein on the pad...
+    #[serde(default, deserialize_with = "present")]
+    ship: Option<Ship>,
+    /// ... and the shipped starting credits.
+    #[serde(default, deserialize_with = "present")]
+    credits: Option<u32>,
 }
 
 /// Reads a field that `World` writes bare, not as an RON `Some(..)`.
@@ -69,6 +81,7 @@ where
 pub enum LoadError {
     Orders(OrderError),
     Crew(CrewError),
+    Ship(ShipError),
 }
 
 impl std::fmt::Display for LoadError {
@@ -76,6 +89,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Orders(e) => write!(f, "standing orders: {e}"),
             LoadError::Crew(e) => write!(f, "crew: {e}"),
+            LoadError::Ship(e) => write!(f, "ship: {e}"),
         }
     }
 }
@@ -98,12 +112,17 @@ impl TryFrom<RawWorld> for World {
             }
         };
         crew.check(&colony).map_err(LoadError::Crew)?;
+        let ship = raw.ship.unwrap_or_default();
+        ship.check().map_err(LoadError::Ship)?;
+        let credits = raw.credits.unwrap_or(ShipDef::shipped().starting_credits);
         Ok(Self {
             now: raw.now,
             colony,
             orders: raw.orders,
             crew,
             rng: raw.rng,
+            ship,
+            credits,
         })
     }
 }
@@ -141,6 +160,8 @@ impl World {
             orders: Orders::default(),
             crew: Crew::new(roster),
             rng: SimRng::default(),
+            ship: Ship::default(),
+            credits: ShipDef::shipped().starting_credits,
         }
     }
 
@@ -474,6 +495,27 @@ mod tests {
         let loaded: World = ron::from_str(&old).unwrap();
         assert_eq!(loaded.rng, SimRng::default());
         assert_eq!(loaded, World::landfall());
+    }
+
+    #[test]
+    fn landfall_has_the_mullein_on_the_pad_and_the_starting_purse() {
+        let world = World::landfall();
+        assert_eq!(world.ship.location(), &ship::ShipLocation::Pad);
+        assert_eq!(world.ship.fuel_l(), world.ship.def().tank_l);
+        assert_eq!(world.credits, ShipDef::shipped().starting_credits);
+    }
+
+    #[test]
+    fn a_save_with_a_bad_ship_is_rejected() {
+        let saved = ron::to_string(&World::landfall()).unwrap();
+        let reject = |from: &str, to: &str| {
+            let edited = saved.replacen(from, to, 1);
+            assert_ne!(edited, saved, "{from} not in save");
+            assert!(ron::from_str::<World>(&edited).is_err(), "{from} -> {to}");
+        };
+        reject(",fuel_l:1000", ",fuel_l:1001");
+        reject(",pods:1", ",pods:2");
+        reject("integrity_pct:100", "integrity_pct:101");
     }
 
     #[test]

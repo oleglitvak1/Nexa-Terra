@@ -1,0 +1,37 @@
+// Nexa Terra: The Mullein, the colony's tramp freighter, and what she carries.
+//
+// Fuel is whole liters of reaction mass, cargo mass whole kilograms, cargo
+// integrity a whole percent, credits whole credits (docs/game-design.md 4.B).
+(
+    name: "The Mullein",
+    // A clean round trip burns 700 L of the 1,000 L tank, leaving a 300 L
+    // reserve: two Overclock Burns, or one and change.
+    tank_l: 1000,
+    start_fuel_l: 1000,
+    leg_burn_l: 350,
+    overclock_burn_l: 150,
+    // Chaff/ECM pods for the countermeasure; each use spends one. One pod for
+    // a round trip with a hazard each way, so using it outbound is a choice.
+    ecm_pods: 1,
+    // The colony's whole purse; a ransom spends it, the haggle (milestone 6) needs it.
+    starting_credits: 500,
+    route: (
+        destination: "barge_77",
+        name: "Scrap Barge 77",
+        // Nominal Sols each way through The Slip.
+        transit_sols: 5,
+    ),
+    // Outbound manifest: ten tons of raw silicon from the Ash Plain.
+    manifest: [
+        (id: "crate_01", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_02", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_03", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_04", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_05", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_06", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_07", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_08", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_09", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+        (id: "crate_10", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
+    ],
+)
