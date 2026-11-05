@@ -26,6 +26,8 @@ pub struct ColonyDef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleDef {
     pub id: ModuleId,
+    #[serde(default)]
+    pub kind: ModuleKind,
     /// Marks this module's tiles in the layout.
     pub glyph: char,
     #[serde(default)]
@@ -51,6 +53,15 @@ impl ModuleDef {
     pub fn uses_power(&self) -> bool {
         self.output_kw > 0 || self.draw_kw > 0 || self.battery.is_some()
     }
+}
+
+/// What a module is for, where other rules care (crew bunk in habs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ModuleKind {
+    #[default]
+    Utility,
+    /// Living quarters. Needs a machine, since crew stress follows its state.
+    Hab,
 }
 
 fn default_true() -> bool {
@@ -94,6 +105,8 @@ pub enum ContentError {
     },
     BatteryOverfull(ModuleId),
     StartWearTooHigh(ModuleId),
+    /// A hab with no tolerance band, so its bunks could never go cold.
+    HabWithoutMachine(ModuleId),
 }
 
 impl std::fmt::Display for ContentError {
@@ -120,6 +133,9 @@ impl std::fmt::Display for ContentError {
             }
             ContentError::StartWearTooHigh(id) => {
                 write!(f, "module {id} starts at or above failure wear")
+            }
+            ContentError::HabWithoutMachine(id) => {
+                write!(f, "hab {id} has no machine")
             }
         }
     }
@@ -187,6 +203,9 @@ impl Colony {
                 Some(b) => b.charge_kwh,
                 None => 0,
             };
+            if m.kind == ModuleKind::Hab && m.machine.is_none() {
+                return Err(ContentError::HabWithoutMachine(m.id));
+            }
             let temp_centi_c = m.start_temp_centi_c.unwrap_or(def.ambient_centi_c);
             let machine = match m.machine {
                 Some(md) if md.start_wear_bp >= MAX_WEAR_BP => {

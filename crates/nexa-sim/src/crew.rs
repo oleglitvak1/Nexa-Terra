@@ -3,7 +3,7 @@
 //!
 //! Stress and morale tuning is loaded and checked here; nothing steps it yet.
 
-use crate::colony::{Colony, Module};
+use crate::colony::{Colony, Module, ModuleKind};
 use nexa_types::{CrewId, ModuleId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,9 +19,6 @@ pub const MAX_SKILL: u8 = 5;
 
 /// Stress, morale and their rates are basis points, 0..=MAX_BP.
 pub const MAX_BP: u16 = 10_000;
-
-/// Hab modules are named `hab_*` until modules carry a kind.
-const HAB_PREFIX: &str = "hab_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Skill {
@@ -55,7 +52,8 @@ pub enum Assignment {
 
 /// One crew member's fixed data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CrewDef {
+#[serde(deny_unknown_fields)]
+pub struct CrewMember {
     pub id: CrewId,
     pub name: String,
     /// Children need an adult on their side of the Split.
@@ -70,7 +68,7 @@ pub struct CrewDef {
     pub bunk: ModuleId,
 }
 
-impl CrewDef {
+impl CrewMember {
     pub fn skill(&self, skill: Skill) -> u8 {
         self.skills.get(&skill).copied().unwrap_or(0)
     }
@@ -78,6 +76,7 @@ impl CrewDef {
 
 /// Stress and morale tuning; every `_bp` field is basis points (per hour for rates).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CrewTuning {
     /// Piloting rating needed to fly the freighter.
     pub pilot_min: u8,
@@ -96,6 +95,10 @@ pub struct CrewTuning {
 
 impl CrewTuning {
     fn check(&self) -> Result<(), CrewError> {
+        // Zero would make everyone a pilot; above MAX_SKILL, nobody.
+        if !(1..=MAX_SKILL).contains(&self.pilot_min) {
+            return Err(CrewError::PilotMinOutOfRange(self.pilot_min));
+        }
         let rates = [
             ("stress_rise_cold_bp", self.stress_rise_cold_bp),
             ("stress_recover_bp", self.stress_recover_bp),
@@ -106,7 +109,9 @@ impl CrewTuning {
         if let Some(&(field, bp)) = rates.iter().find(|(_, bp)| *bp > MAX_BP) {
             return Err(CrewError::RateOutOfRange { field, bp });
         }
-        if self.calm_bp >= self.strained_bp
+        // Morale recovers below calm, so calm must be above zero.
+        if self.calm_bp == 0
+            || self.calm_bp >= self.strained_bp
             || self.strained_bp >= self.breaking_bp
             || self.breaking_bp > MAX_BP
         {
@@ -118,9 +123,10 @@ impl CrewTuning {
 
 /// The crew content file, checked against the colony the crew lives in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Roster {
     pub tuning: CrewTuning,
-    pub crew: Vec<CrewDef>,
+    pub crew: Vec<CrewMember>,
 }
 
 /// Why a crew content file was rejected.
@@ -144,8 +150,10 @@ pub enum CrewError {
     },
     /// Nobody could fly the freighter.
     NoQualifiedPilot,
-    /// Must hold calm < strained < breaking <= MAX_BP.
+    /// Must hold 0 < calm < strained < breaking <= MAX_BP.
     ThresholdsOutOfOrder,
+    /// `pilot_min` must be 1..=MAX_SKILL.
+    PilotMinOutOfRange(u8),
     RateOutOfRange {
         field: &'static str,
         bp: u16,
@@ -172,8 +180,11 @@ impl std::fmt::Display for CrewError {
             CrewError::NoQualifiedPilot => write!(f, "no crew member can fly the freighter"),
             CrewError::ThresholdsOutOfOrder => write!(
                 f,
-                "stress thresholds must be calm < strained < breaking <= {MAX_BP}"
+                "stress thresholds must be 0 < calm < strained < breaking <= {MAX_BP}"
             ),
+            CrewError::PilotMinOutOfRange(n) => {
+                write!(f, "pilot_min is {n}, expected 1..={MAX_SKILL}")
+            }
             CrewError::RateOutOfRange { field, bp } => {
                 write!(f, "{field} is {bp}, above {MAX_BP}")
             }
@@ -184,7 +195,7 @@ impl std::fmt::Display for CrewError {
 impl std::error::Error for CrewError {}
 
 fn is_hab(module: &Module) -> bool {
-    module.id().as_str().starts_with(HAB_PREFIX) && module.machine().is_some()
+    module.def().kind == ModuleKind::Hab
 }
 
 impl Roster {
@@ -231,13 +242,21 @@ impl Roster {
     }
 }
 
+impl Roster {
+    /// The shipped crew, checked against the colony they will live in
+    /// (e.g. a save's colony, not necessarily the landing site).
+    pub fn shipped(colony: &Colony) -> Result<Self, CrewError> {
+        Self::from_ron(CREW, colony)
+    }
+}
+
 impl Default for Roster {
     /// The shipped crew, bunked on the Ash Plain landing site.
     fn default() -> Self {
         // Both files are checked by tests, so failing here is a build bug.
         let colony = Colony::from_ron(crate::colony::LANDING_ASH_PLAIN)
             .expect("landing site content is valid");
-        Self::from_ron(CREW, &colony).expect("crew content is valid")
+        Self::shipped(&colony).expect("crew content is valid")
     }
 }
 
@@ -247,28 +266,40 @@ pub enum SplitError {
     /// Nobody on the Flight side has Piloting >= `pilot_min`.
     NoQualifiedPilot,
     /// A child's side of the Split has no adult on it.
-    MayaWithoutAdult,
+    MayaWithoutAdult { child: CrewId },
+    /// An assignment names someone who isn't in the crew.
+    UnknownCrew(CrewId),
 }
 
 impl std::fmt::Display for SplitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SplitError::NoQualifiedPilot => write!(f, "no qualified pilot is flying"),
-            SplitError::MayaWithoutAdult => write!(f, "Maya has no adult on her side"),
+            SplitError::MayaWithoutAdult { child } => {
+                write!(f, "{child} has no adult on their side")
+            }
+            SplitError::UnknownCrew(id) => write!(f, "no crew member named {id}"),
         }
     }
 }
 
 impl std::error::Error for SplitError {}
 
-/// Check a proposed Split. Crew missing from `assignments` stay on the Ground.
+/// Check a proposed Split. Crew missing from `assignments` stay on the Ground,
+/// but every id in `assignments` must be a crew member.
 /// Children are the crew with `adult: false` (only Maya in the shipped roster).
 pub fn check_split(
-    crew: &[CrewDef],
+    crew: &[CrewMember],
     tuning: &CrewTuning,
     assignments: &BTreeMap<CrewId, Assignment>,
 ) -> Result<(), SplitError> {
-    let side = |c: &CrewDef| assignments.get(&c.id).copied().unwrap_or_default();
+    if let Some(unknown) = assignments
+        .keys()
+        .find(|id| !crew.iter().any(|c| &c.id == *id))
+    {
+        return Err(SplitError::UnknownCrew(unknown.clone()));
+    }
+    let side = |c: &CrewMember| assignments.get(&c.id).copied().unwrap_or_default();
     if !crew
         .iter()
         .any(|c| side(c) == Assignment::Flight && c.skill(Skill::Piloting) >= tuning.pilot_min)
@@ -277,7 +308,9 @@ pub fn check_split(
     }
     for child in crew.iter().filter(|c| !c.adult) {
         if !crew.iter().any(|c| c.adult && side(c) == side(child)) {
-            return Err(SplitError::MayaWithoutAdult);
+            return Err(SplitError::MayaWithoutAdult {
+                child: child.id.clone(),
+            });
         }
     }
     Ok(())
@@ -373,6 +406,7 @@ mod tests {
                 bunk: ModuleId::new("ghost")
             })
         );
+        // Has a machine, but isn't a hab.
         r.crew[4].bunk = ModuleId::new("smelter_01");
         assert_eq!(
             check(&r),
@@ -386,14 +420,45 @@ mod tests {
     #[test]
     fn someone_must_be_able_to_fly() {
         let mut r = shipped();
-        r.tuning.pilot_min = MAX_SKILL + 1;
+        r.crew[3].skills.insert(Skill::Piloting, 3);
         assert_eq!(check(&r), Err(CrewError::NoQualifiedPilot));
+    }
+
+    #[test]
+    fn pilot_min_stays_within_skill_ratings() {
+        for bad in [0, MAX_SKILL + 1] {
+            let mut r = shipped();
+            r.tuning.pilot_min = bad;
+            assert_eq!(check(&r), Err(CrewError::PilotMinOutOfRange(bad)));
+        }
+    }
+
+    #[test]
+    fn misspelled_fields_are_parse_errors() {
+        let typo = CREW.replacen("skills:", "skils:", 1);
+        assert!(matches!(
+            Roster::from_ron(&typo, &ash_plain()),
+            Err(CrewError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn shipped_crew_checks_against_the_given_colony() {
+        let mut def = crate::colony::ColonyDef::from_ron(LANDING_ASH_PLAIN).unwrap();
+        def.modules.retain(|m| m.id.as_str() != "hab_02");
+        def.layout = def.layout.iter().map(|row| row.replace('h', ".")).collect();
+        let colony = Colony::from_def(def).unwrap();
+        assert!(matches!(
+            Roster::shipped(&colony),
+            Err(CrewError::UnknownBunk { .. })
+        ));
     }
 
     #[test]
     fn stress_thresholds_must_be_ordered() {
         let base = shipped();
-        let cases: [fn(&mut CrewTuning); 3] = [
+        let cases: [fn(&mut CrewTuning); 4] = [
+            |t| t.calm_bp = 0,
             |t| t.strained_bp = t.calm_bp,
             |t| t.breaking_bp = t.strained_bp,
             |t| t.breaking_bp = MAX_BP + 1,
@@ -449,7 +514,7 @@ mod tests {
         // Maya on the ground alone.
         assert_eq!(
             split(&["cal", "jonathan", "elena", "oron", "dax"]),
-            Err(SplitError::MayaWithoutAdult)
+            Err(SplitError::MayaWithoutAdult { child: id("maya") })
         );
     }
 
@@ -464,6 +529,14 @@ mod tests {
     #[test]
     fn oron_counts_as_mayas_adult() {
         assert_eq!(split(&["cal", "jonathan", "elena", "dax"]), Ok(()));
+    }
+
+    #[test]
+    fn unknown_crew_in_a_split_is_rejected() {
+        assert_eq!(
+            split(&["cal", "Maya"]),
+            Err(SplitError::UnknownCrew(id("Maya")))
+        );
     }
 
     #[test]

@@ -7,12 +7,12 @@
         // Rated 4 is a professional pilot: only Cal can fly the freighter.
         pilot_min: 4,
         // A cold or failed bunk takes a calm crew member (0) to strained in
-        // about a Sol and a half and to breaking in about two Sols.
+        // about a Sol and a quarter (31 h) and to breaking in about two Sols (50 h).
         stress_rise_cold_bp: 160,
         // A third of the rise: losing a bunk for a day costs three days to undo.
         stress_recover_bp: 55,
         // Father's Vigilance: Maya's bunk going cold hits Jonathan harder than
-        // his own would, so he breaks in about a Sol.
+        // his own would, so he breaks in about a Sol (26 h).
         vigilance_extra_bp: 150,
         calm_bp: 2500,
         strained_bp: 5000,

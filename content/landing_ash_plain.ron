@@ -54,7 +54,7 @@
         (id: "bat_01", glyph: 'B', battery: Some((capacity_kwh: 400, charge_kwh: 300))),
         (id: "scrubber_01", glyph: 'O', draw_kw: 5),
         (
-            id: "hab_01", glyph: 'H', draw_kw: 3, start_temp_centi_c: Some(1400),
+            id: "hab_01", kind: Hab, glyph: 'H', draw_kw: 3, start_temp_centi_c: Some(1400),
             // Hard landing: the seal is already 40% worn.
             machine: Some((
                 tolerance: (min_centi_c: 500, max_centi_c: 3000),
@@ -63,7 +63,7 @@
             )),
         ),
         (
-            id: "hab_02", glyph: 'h', draw_kw: 3, start_temp_centi_c: Some(1400),
+            id: "hab_02", kind: Hab, glyph: 'h', draw_kw: 3, start_temp_centi_c: Some(1400),
             machine: Some((
                 tolerance: (min_centi_c: 500, max_centi_c: 3000),
                 wear_bp_per_hour: 130,

@@ -3,7 +3,7 @@
 mod content;
 mod save;
 
-pub use content::{BatteryDef, ColonyDef, ContentError, MachineDef, ModuleDef};
+pub use content::{BatteryDef, ColonyDef, ContentError, MachineDef, ModuleDef, ModuleKind};
 pub use save::SaveError;
 
 use crate::grid::Grid;
@@ -487,6 +487,28 @@ mod tests {
             Colony::from_def(def),
             Err(ContentError::BatteryOverfull(id("gen")))
         );
+    }
+
+    #[test]
+    fn rejects_habs_without_a_machine() {
+        let mut def = tiny();
+        def.modules[1].kind = ModuleKind::Hab;
+        assert_eq!(
+            Colony::from_def(def),
+            Err(ContentError::HabWithoutMachine(id("hab")))
+        );
+    }
+
+    #[test]
+    fn landing_site_habs_are_marked() {
+        let c = ash_plain();
+        let habs: Vec<_> = c
+            .modules()
+            .iter()
+            .filter(|m| m.def().kind == ModuleKind::Hab)
+            .map(|m| m.id().as_str())
+            .collect();
+        assert_eq!(habs, ["hab_01", "hab_02"]);
     }
 
     #[test]
