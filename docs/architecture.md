@@ -307,8 +307,8 @@ Milestones are ordered, not dated; each ends with something playable or testable
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
 2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
 3. **Standing Orders.** *(Done.)* Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
-4. **Crew and the Split.** Six crew from data, assignments, stress and morale, the Split screen with its two rules.
-5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks. `OfflineUniverse` introduced here.
+4. **Crew and the Split.** *(Done.)* Six crew from data, assignments, stress and morale, the Split screen with its two rules.
+5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks (the `check` function and the sim's seeded RNG land here, moved from milestone 4). `OfflineUniverse` introduced here.
 6. **Scrap Barge 77.** Haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
 7. **Layer 1.** CRT shader, synthesized sound effects and ambience.
 8. **Layer 2.** Vector panels for cockpit, haggle and Black Box; code-drawn isometric tiles.
