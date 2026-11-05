@@ -90,23 +90,30 @@ fn resolution(events: &[SimEvent]) -> &Resolution {
         .unwrap()
 }
 
-/// Fly to arrival, answering every hazard with `option`.
-fn fly(world: &mut World, option: &str) -> Vec<SimEvent> {
+/// Fly to arrival, answering every hazard with `option`: the voyage's
+/// events, then the colony's catch-up events.
+fn fly_apart(world: &mut World, option: &str) -> (Vec<SimEvent>, Vec<SimEvent>) {
     let mut events = Vec::new();
     loop {
         match world.advance_voyage() {
             Ok(step) => {
                 let arrived = step.arrived();
                 events.extend(step.events);
-                events.extend(step.colony);
                 if arrived {
-                    return events;
+                    return (events, step.colony);
                 }
+                assert!(step.colony.is_empty());
             }
             Err(FlightError::HazardPending) => events.extend(world.resolve_hazard(option).unwrap()),
             Err(e) => panic!("{e:?}"),
         }
     }
+}
+
+fn fly(world: &mut World, option: &str) -> Vec<SimEvent> {
+    let (mut events, colony) = fly_apart(world, option);
+    events.extend(colony);
+    events
 }
 
 fn voyage(world: &World) -> &Voyage {
@@ -414,7 +421,7 @@ fn random_delays_stop_at_the_round_trip_cap() {
 fn arrival_holds_over_barge_77() {
     let mut world = crewed(5);
     world.launch(&mut OfflineUniverse::default()).unwrap();
-    let events = fly(&mut world, "pay");
+    let (events, _colony) = fly_apart(&mut world, "pay");
     let v = voyage(&world);
     assert_eq!(v.status(), VoyageStatus::Holding);
     assert_eq!(
@@ -475,4 +482,91 @@ fn a_save_with_the_ship_out_of_place_is_rejected() {
     let edited = docked.replacen("location:Pad", "location:InSlip", 1);
     assert_ne!(edited, docked);
     assert!(ron::from_str::<World>(&edited).is_err());
+}
+
+fn sols_started(events: &[SimEvent]) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            SimEvent::SolStarted { sol } => Some(*sol),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn arrival_runs_the_colony_through_every_sol_flown() {
+    let mut world = crewed(5);
+    // Launch on Sol 2, hour 0.
+    for _ in 0..2 * TICKS_PER_SOL {
+        world.tick();
+    }
+    let departed = world.now;
+    let mut drifting = world.clone();
+
+    world.launch(&mut OfflineUniverse::default()).unwrap();
+    let (_, colony) = fly_apart(&mut world, "pay");
+    assert_eq!(world.now, Tick(departed.0 + ticks_in(5)));
+    assert_eq!(sols_started(&colony), [3, 4, 5, 6, 7]);
+
+    // A failed Overclock Burn drifts the engine: 7 to 10 more Sols to catch up.
+    drifting
+        .launch_with_rules(
+            &mut interdiction_on(&[2]),
+            rigged("overclock", Outcome::Fail),
+        )
+        .unwrap();
+    let (_, colony) = fly_apart(&mut drifting, "overclock");
+    let sols = voyage(&drifting).sols_total();
+    assert!((12..=15).contains(&sols), "{sols}");
+    assert_eq!(drifting.now, Tick(departed.0 + ticks_in(sols)));
+    assert_eq!(
+        sols_started(&colony),
+        (3..=u64::from(2 + sols)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn standing_orders_run_while_the_ship_is_away() {
+    let mut world = crewed(2);
+    for order in &crate::orders::OrdersDef::shipped().presets["caretaker"] {
+        world.add_order(order.clone()).unwrap();
+    }
+    world.launch(&mut OfflineUniverse::default()).unwrap();
+    let (voyage_events, colony) = fly_apart(&mut world, "dump");
+    assert!(colony
+        .iter()
+        .any(|e| matches!(e, SimEvent::OrderFired { .. })));
+    // The Caretaker's work shows up only in the catch-up, never mid-flight.
+    assert!(!voyage_events
+        .iter()
+        .any(|e| matches!(e, SimEvent::OrderFired { .. })));
+}
+
+#[test]
+fn ground_crew_feel_the_sols_away_and_the_flight_crew_do_not() {
+    let mut world = crewed(4);
+    world
+        .launch_with_rules(
+            &mut interdiction_on(&[2]),
+            rigged("overclock", Outcome::Fail),
+        )
+        .unwrap();
+    let (_, colony) = fly_apart(&mut world, "overclock");
+    let changed = |who: &str| {
+        colony
+            .iter()
+            .any(|e| matches!(e, SimEvent::CrewStressChanged { crew, .. } if crew.as_str() == who))
+    };
+    // Unattended, the habs go cold within the dozen-odd Sols away.
+    for ground in ["elena", "maya", "oron"] {
+        assert!(changed(ground), "{ground}");
+    }
+    // Father's Vigilance reaches Jonathan in The Slip; nobody else aboard.
+    assert!(changed("jonathan"));
+    for flying in ["cal", "dax"] {
+        assert!(!changed(flying), "{flying}");
+        let v = world.crew.vitals(&CrewId::new(flying)).unwrap();
+        assert_eq!(v.stress_bp, 0, "{flying}");
+    }
 }

@@ -430,8 +430,8 @@ impl World {
     }
 
     /// Run the colony through the Sols the voyage used.
-    fn catch_up(&mut self, _sols: u32) -> Vec<SimEvent> {
-        Vec::new()
+    fn catch_up(&mut self, sols: u32) -> Vec<SimEvent> {
+        (0..ticks_in(sols)).flat_map(|_| self.tick()).collect()
     }
 
     /// Answer the pending hazard with one of its options: pay its cost, roll
