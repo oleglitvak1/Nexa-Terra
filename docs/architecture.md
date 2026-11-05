@@ -83,10 +83,10 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | Module | Owns | Key types |
 | --- | --- | --- |
 | `grid` | Tile map, conduits, power / thermal fluid / oxygen routing | `Grid`, `Tile`, `Network`, `FlowSolver` |
-| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef` |
+| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef`, `ModuleKind` (Utility, Hab) |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
-| `crew` | Six named specialists, skills, stress, morale, assignments | `CrewId`, `CrewMember`, `Assignment` (Ground, Flight), `Trait` |
+| `crew` | Six named specialists, skills, stress, morale, assignments, the Split rules | `CrewId`, `CrewMember`, `Skill`, `Trait`, `Assignment` (Ground, Flight), `SplitError` |
 | `orders` | Standing Orders rule cards: typed model + evaluator, run each tick from `World::tick` | `Trigger`, `Action`, `StandingOrder`, `Orders`, `render()`, `evaluate()` |
 | `flight` | The Slip transit, fuel, cargo integrity, delays | `Voyage`, `Manifest`, `HazardEvent`, `Resolution` |
 | `station` | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
@@ -132,6 +132,18 @@ Preset card sets live in `content/standing_orders.ron`. `cargo run -p nexa-tools
 **The editor** (`nexa-game/src/orders_view.rs`, `[O]` from the colony screen) lists the cards with slot, priority and command text, and builds new ones from lists: a trigger kind, then its module and threshold (temperatures start at the module's current reading, in 0.5 C steps; power in 5% steps, then 1% steps below 5% so any value from 1 to 100% can be set), then an action and its module, then priority 1 to 9. The steps, ranges and highest priority are the `editor` block of `content/standing_orders.ron`; they aren't saved, since stored cards already hold their values. Heat actions only offer modules on a heat line. Backspace undoes the last part added, and deleting a card takes a second `D` to confirm. Cards are stored and deleted through `World::add_order` and `World::remove_order`, so a refused card stays open and the terminal shows the sim's `OrderError`. The colony is held while the terminal is open.
 
 A typed-entry parser that produces the same enums can be added later; the slice doesn't need one.
+
+**Crew and the Split.** The six crew come from `content/crew.ron`. Each has a `CrewId` (`cal`, `maya`, ...), a display name, an `adult` flag, skill ratings 0 to 5 per `Skill` (Piloting, Engineering, Medicine, Negotiation, Astrogation, Sensors, Rigging), one `Trait` (their psychological dynamic) and a bunk hab. A hab is a module with `kind: Hab` in the colony content, and a hab must have a machine. Content is checked at load: exactly six crew, unique IDs, no unknown fields, every bunk a hab in the colony, `pilot_min` from 1 to 5, at least one qualified pilot, stress thresholds 0 < calm < strained < breaking <= 10000 and rates <= 10000. Like the colony, `World.crew` keeps its content definitions in the save; saves from before crew get the shipped roster, checked against that save's colony (`Roster::shipped`). Saves from before `ModuleKind` load their habs as Utility, so that path must mark `hab_*` modules as habs or such saves will be refused.
+
+- **Specializations are data only for now.** Surface and flight specializations (Jonathan's wider tolerances, Cal's shift discipline, Maya's duct runs, ...) take effect when the systems they touch exist. Until then they are shown, not applied.
+- **The Split.** Each crew member's `Assignment` is Ground or Flight; everyone starts on Ground. The player opens the crew screen (`[C]` from the colony screen) at any time and confirms through `World::confirm_split`, which enforces the two rules and refuses with a `SplitError`:
+  - `NoQualifiedPilot`: no Flight crew member has Piloting at or above `pilot_min` (Cal only, on current content). Non-pilots flying by manual is out of slice scope.
+  - `MayaWithoutAdult { child }`: Maya's side (Ground or Flight) has no other crew member with `adult: true`. Oron-3 counts as an adult. The rule applies to every crew member with `adult: false`; `child` names the one left uncovered.
+
+  An assignment naming someone not in the crew is refused with `UnknownCrew`; crew left out of the assignments stay on the Ground.
+
+  Those are the only rules: everyone flying is allowed, and so is Maya flying. A confirmed Split emits `SimEvent::SplitConfirmed`. Launch is milestone 5; until then confirming only records the assignment.
+- **Stress and morale.** Both are integers in basis points (0 to 10000), stepped once per tick after the colony's hour, from the state of each Ground crew member's bunk hab. Stress rises while the bunk is in Freeze or has failed, and recovers while it's nominal. *Father's Vigilance:* Jonathan gains extra stress while Maya's bunk is cold, wherever he is. Morale falls while stress is above the `strained` threshold and recovers while it's below `calm`. Crossing a stress level (Calm, Strained, Breaking) emits `SimEvent::CrewStressChanged { crew, level }`. Rates and thresholds live in `content/crew.ron`. The levels have no consequences yet; desertion, refusals and mistakes come with the systems that need them.
 
 **Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
 
@@ -244,7 +256,7 @@ All content is RON (Rusty Object Notation) loaded through `serde`, validated at 
 | --- | --- |
 | `content/machines.ron` | Machine kinds, nominal bands, failure modes, required parts |
 | `content/parts.ron` | Wear parts, mass, base value |
-| `content/crew.ron` | The six crew: skills, traits, stress thresholds |
+| `content/crew.ron` | The six crew: skills, traits, adult flag, bunk hab; pilot minimum, stress and morale rates and thresholds |
 | `content/hazards.ron` | Slip hazard events, options, checks, outcomes, delay ranges |
 | `content/stations/scrap_barge_77.ron` | Vendors, stock, patience, dialogue, the prospector dilemma |
 | `content/epochs.ron` | Atmosphere targets and epoch requirements |
@@ -303,7 +315,7 @@ All eight spec questions are decided. Three were adjusted to fit this architectu
 | --- | --- | --- |
 | Time model | Real-time with pause for the colony (1x / 2x / 3x); discrete event steps for The Slip and stations | Sim unchanged: fixed ticks, front end sets speed. 1 tick = 1 hour, 26 ticks per Sol; at 1x, 1 hour = 5 s (about 2 min 10 s per Sol). On landing the sim fast-forwards the colony through the elapsed Sols |
 | Colony view | Isometric, fixed angle | **Adjusted:** no 4-way rotation for now, since it multiplies sprite work by four. Layer 0 ASCII stays top-down; the sim grid doesn't depend on projection, so isometric is a Layer 2 rendering choice |
-| Crew split | Player decides fully, with two rules: at least one qualified pilot on *The Mullein*; at least one adult stays with Maya | Rules validated in `crew` when the Split is confirmed. Non-pilots flying via a flight manual is out of slice scope |
+| Crew split | Player decides fully, with two rules: at least one qualified pilot on *The Mullein*; at least one adult stays with Maya | Rules validated in `crew` when the Split is confirmed. Oron-3 counts as an adult. Non-pilots flying via a flight manual is out of slice scope |
 | Barge 77 merchant | Silas "Grip" Vane, scrap broker running the reclamation dock. Whoever goes negotiates; Dax is best | Haggle uses the negotiator's skill and that character's own dialogue set |
 | Epoch 01 exit | Carbon filters only. Bore valves move to the start of Epoch 02 | Done in the GDD |
 | Day budget | Nominal run 23 Sols (10 ground, 5 + 5 flight, 3 station). Random hazard delays capped at +12 Sols, so the worst random case lands on Sol 35 | **Adjusted:** the cap covers random hazards only. Player-caused audits and penalties stack uncapped, so one 14-Sol audit after bad luck lands on Sol 49 and loses the colony |
