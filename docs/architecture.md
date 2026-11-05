@@ -173,6 +173,8 @@ A typed-entry parser that produces the same enums can be added later; the slice 
 
 Events: `Launched`, `SlipSolPassed`, `HazardEncountered`, `HazardResolved` (the option, the `Roll` if any, and what it cost after the cap) and `Arrived`.
 
+*Tuning.* `cargo run -p nexa-tools -- --launch --seed 7 --resolve overclock` flies one voyage headless (after SOLS on the ground, default 0) and prints the transit log, each roll, what it cost and where the ship ended up; caught-up colony events are stamped with the Sol they fell in. `--sweep N` flies seeds 0..N per option and prints Success/Partial/Fail rates and mean fuel, cargo integrity, crates, credits and delay at arrival. Both fly Cal, Jonathan and Dax unless `--split` says otherwise. First-pass numbers (`content/hazards.ron`): `skill_weight` 3, a d20, `partial_band` 6 and difficulty 29 on all three checks, with a +3 specialist bonus. A rated-5 specialist aboard scores 18 + d20: 50% Success, 30% Partial, 20% Fail, so every check option is a real gamble and none beats the certain concessions outright. Without the specialist the next-best member is much weaker (Dax's Piloting 3 gives 9 + d20: 5% Success, 30% Partial, 65% Fail), which is the Split's price. The Mullein carries one ECM pod, so using it outbound leaves none for milestone 6's return leg; the ransom (300 of the 500 starting credits) eats into the haggle budget; dumping costs 3 of 10 crates.
+
 ## Presentation layering plan
 
 The game starts as a terminal inside a macroquad window and gains visuals layer by layer on the same front end, with no rewrite between layers.

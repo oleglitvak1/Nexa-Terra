@@ -7,8 +7,18 @@
 //!
 //! Usage: `nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]`
 //! (presets: content/standing_orders.ron; IDs: content/crew.ron).
+//!
+//! The Slip: `--launch --resolve OPTION [--seed N]` runs SOLS (default 0) on
+//! the ground, launches, answers every hazard with OPTION and prints a voyage
+//! report. `--sweep N [--resolve OPTION]` flies seeds 0..N per option (all of
+//! the interdiction's, unless one is given) and prints outcome rates and mean
+//! fuel, cargo, credits and delay at arrival. Both fly `cal,jonathan,dax`
+//! unless `--split` says otherwise.
+
+mod slip;
 
 use nexa_sim::crew::{Assignment, StressLevel};
+use nexa_sim::hazards::HazardsDef;
 use nexa_sim::orders::OrdersDef;
 use nexa_sim::{SimEvent, World};
 use nexa_types::{CrewId, Tick, TICKS_PER_SOL};
@@ -52,6 +62,13 @@ impl CrewTally {
     }
 }
 
+fn next_number(args: &mut impl Iterator<Item = String>, flag: &str) -> u64 {
+    match args.next().map(|n| n.parse()) {
+        Some(Ok(n)) => n,
+        _ => usage(&format!("{flag} needs a number")),
+    }
+}
+
 /// `cal,oron` -> both on Flight; everyone else stays on the Ground.
 fn parse_split(list: &str) -> BTreeMap<CrewId, Assignment> {
     list.split(',')
@@ -62,12 +79,23 @@ fn parse_split(list: &str) -> BTreeMap<CrewId, Assignment> {
 }
 
 fn main() {
-    let mut sols = DEFAULT_SOLS;
+    let mut sols: Option<u64> = None;
     let mut preset: Option<String> = None;
     let mut split: Option<String> = None;
+    let mut launch = false;
+    let mut seed: Option<u64> = None;
+    let mut resolve: Option<String> = None;
+    let mut sweep: Option<u64> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--launch" => launch = true,
+            "--seed" => seed = Some(next_number(&mut args, "--seed")),
+            "--sweep" => sweep = Some(next_number(&mut args, "--sweep")),
+            "--resolve" => match args.next() {
+                Some(option) => resolve = Some(option),
+                None => usage("--resolve needs an option, e.g. ecm"),
+            },
             "--orders" => match args.next() {
                 Some(name) => preset = Some(name),
                 None => usage("--orders needs a preset name"),
@@ -77,13 +105,34 @@ fn main() {
                 None => usage("--split needs crew IDs, e.g. cal,oron"),
             },
             _ => match arg.parse() {
-                Ok(n) => sols = n,
+                Ok(n) => sols = Some(n),
                 Err(_) => usage(&format!("unexpected argument {arg:?}")),
             },
         }
     }
 
-    let mut world = World::landfall();
+    if let Some(seeds) = sweep {
+        run_sweep(
+            seeds,
+            split.as_deref().unwrap_or(slip::DEFAULT_FLIGHT),
+            resolve.as_deref(),
+        );
+        return;
+    }
+    if launch && split.is_none() {
+        split = Some(slip::DEFAULT_FLIGHT.to_string());
+    }
+    let option = match (launch, resolve) {
+        (true, Some(option)) => Some(option),
+        (true, None) => usage("--launch needs --resolve OPTION"),
+        (false, _) => None,
+    };
+    let sols = sols.unwrap_or(if launch { 0 } else { DEFAULT_SOLS });
+
+    let mut world = match seed {
+        Some(seed) => World::landfall_seeded(seed),
+        None => World::landfall(),
+    };
     if let Some(name) = &preset {
         let def = OrdersDef::shipped();
         let Some(cards) = def.presets.get(name) else {
@@ -122,6 +171,13 @@ fn main() {
             log_event(now, &event, &mut fires);
         }
         tally.record(&world);
+    }
+
+    if let Some(option) = &option {
+        run_voyage(&mut world, option, &mut fires);
+        tally.record(&world);
+        // The sim runs the catch-up inside arrival, out of the tally's sight.
+        println!("[SIM] peak and hours below miss the hours caught up on arrival");
     }
 
     println!(
@@ -214,12 +270,58 @@ fn log_event(now: Tick, event: &SimEvent, fires: &mut [u64]) {
         }
         SimEvent::SlipSolPassed { sol, of } => println!("[SLIP] sol {sol} of {of}"),
         SimEvent::HazardEncountered { hazard } => println!("[SLIP] hazard: {hazard}"),
-        SimEvent::HazardResolved(r) => println!("[SLIP] {} -> {}", r.option, r.outcome.label()),
+        SimEvent::HazardResolved(r) => println!("[SLIP] {}", slip::describe(r)),
         SimEvent::Arrived {
             destination,
             sols,
             delay_sols,
         } => println!("[SLIP] holding over {destination} after {sols} Sols (+{delay_sols} delay)"),
+    }
+}
+
+/// Launch, fly to arrival answering every hazard with `option`, and report.
+fn run_voyage(world: &mut World, option: &str, fires: &mut [u64]) {
+    let departed = world.now;
+    let flown = match slip::fly(world, option) {
+        Ok(flown) => flown,
+        Err(e) => usage(&e),
+    };
+    for event in &flown.voyage {
+        log_event(departed, event, fires);
+    }
+    // Caught-up events are stamped with the Sol they fell in.
+    let mut stamp = departed;
+    for event in &flown.colony {
+        if let SimEvent::SolStarted { sol } = event {
+            stamp = Tick(sol * TICKS_PER_SOL);
+        }
+        log_event(stamp, event, fires);
+    }
+    println!("[VOYAGE] {}", slip::ship_line(world));
+    println!(
+        "[VOYAGE] colony caught up {} events over the Sols away",
+        flown.colony.len()
+    );
+}
+
+/// Outcome rates and arrival means per option, for tuning content/hazards.ron.
+fn run_sweep(seeds: u64, split: &str, only: Option<&str>) {
+    let hazard = &HazardsDef::shipped().hazards[0];
+    let options: Vec<&str> = match only {
+        Some(option) => vec![option],
+        None => hazard.options.iter().map(|o| o.id.as_str()).collect(),
+    };
+    let assignments = parse_split(split);
+    println!(
+        "[SWEEP] {}: {seeds} seeds per option, flying {split}",
+        hazard.id
+    );
+    println!("[SWEEP] {}", slip::Tally::HEADER);
+    for option in options {
+        match slip::sweep(seeds, &assignments, option) {
+            Ok(tally) => println!("[SWEEP] {}", tally.row(option)),
+            Err(e) => usage(&e),
+        }
     }
 }
 
@@ -231,6 +333,14 @@ fn usage(problem: &str) -> ! {
         .collect();
     eprintln!("nexa-tools: {problem}");
     eprintln!("usage: nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]");
+    eprintln!("       nexa-tools [SOLS] --launch --resolve OPTION [--seed N] [--split ...]");
+    eprintln!("       nexa-tools --sweep N [--resolve OPTION] [--split ...]");
+    let options: Vec<&str> = HazardsDef::shipped().hazards[0]
+        .options
+        .iter()
+        .map(|o| o.id.as_str())
+        .collect();
+    eprintln!("options: {}", options.join(", "));
     eprintln!("presets: {}", presets.join(", "));
     let crew: Vec<String> = World::landfall()
         .crew

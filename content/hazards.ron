@@ -14,6 +14,10 @@
 //   cargo_damage_pct: integrity points every crate loses
 //   delay: Some(Minor) or Some(Severe), drawn from the ranges below
 (
+    // Tuned with `nexa-tools --sweep`: a rated-5 specialist aboard (5 * 3 + 3 =
+    // 18) against difficulty 29 succeeds on 11+ (50%), is partial on 5..=10
+    // (30%) and fails on 1..=4 (20%). Without the specialist the same member
+    // needs 14+ to succeed (35%); a crew member rated 0 can't pass a 29 at all.
     checks: (
         skill_weight: 3,
         die_sides: 20,
@@ -36,7 +40,7 @@
                     id: "ecm",
                     label: "Deploy an ECM pod and break the lock",
                     cost: (pods: 1),
-                    check: Some((skill: Piloting, difficulty: 30, specialists: { "cal": 3 })),
+                    check: Some((skill: Piloting, difficulty: 29, specialists: { "cal": 3 })),
                     partial: (delay: Some(Minor)),
                     fail: (cargo_damage_pct: 20, delay: Some(Minor)),
                 ),
@@ -44,7 +48,7 @@
                     id: "overclock",
                     label: "Overclock Burn: outrun the vector",
                     cost: (overclock_burns: 1),
-                    check: Some((skill: Engineering, difficulty: 30, specialists: { "jonathan": 3 })),
+                    check: Some((skill: Engineering, difficulty: 29, specialists: { "jonathan": 3 })),
                     partial: (cargo_damage_pct: 10),
                     fail: (delay: Some(Severe)),
                 ),
@@ -61,7 +65,7 @@
                 (
                     id: "bluff",
                     label: "Bluff with false transponder codes",
-                    check: Some((skill: Negotiation, difficulty: 30, specialists: { "dax": 3 })),
+                    check: Some((skill: Negotiation, difficulty: 29, specialists: { "dax": 3 })),
                     partial: (delay: Some(Minor)),
                     fail: (dump_crates: 4, cargo_damage_pct: 10),
                 ),
