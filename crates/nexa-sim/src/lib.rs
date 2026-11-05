@@ -20,6 +20,7 @@ pub mod check;
 pub mod colony;
 pub mod crew;
 pub mod grid;
+pub mod hazards;
 pub mod machines;
 pub mod orders;
 pub mod parts;
@@ -495,6 +496,16 @@ mod tests {
         let loaded: World = ron::from_str(&old).unwrap();
         assert_eq!(loaded.rng, SimRng::default());
         assert_eq!(loaded, World::landfall());
+    }
+
+    /// Every shipped content file parses and passes its cross-reference checks.
+    #[test]
+    fn all_shipped_content_loads() {
+        let colony = Colony::from_ron(LANDING_ASH_PLAIN).unwrap();
+        let roster = Roster::shipped(&colony).unwrap();
+        OrdersDef::from_ron(orders::STANDING_ORDERS).unwrap();
+        ShipDef::from_ron(ship::MULLEIN).unwrap();
+        hazards::HazardsDef::from_ron(hazards::HAZARDS, &roster).unwrap();
     }
 
     #[test]
