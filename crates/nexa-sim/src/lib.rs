@@ -15,6 +15,7 @@ use rng::SimRng;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod check;
 pub mod colony;
 pub mod crew;
 pub mod grid;
