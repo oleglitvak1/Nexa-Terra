@@ -2,19 +2,23 @@
 //!
 //! An amber terminal that boots, waits for a key, then shows the colony map
 //! and its status, with the simulation running in real time with pause. The
-//! Caretaker terminal edits Standing Orders while the colony is held.
+//! Caretaker terminal edits Standing Orders and the crew screen sets the Split,
+//! both while the colony is held.
 
 mod colony_view;
+mod crew_view;
 mod orders_view;
 mod terminal;
 mod ui;
 
+use crew_view::CrewScreen;
 use macroquad::prelude::*;
-use nexa_sim::World;
+use nexa_sim::{SimEvent, World};
 use nexa_types::Tick;
-use orders_view::{OrdersEditor, Outcome};
+use orders_view::OrdersEditor;
 use std::collections::VecDeque;
 use terminal::{Ink, Terminal};
+use ui::Outcome;
 
 const COLS: usize = 80;
 /// Tall enough for the 32-row map plus a header and key-help row inside the frame.
@@ -55,6 +59,8 @@ enum Screen {
     Online,
     /// The colony doesn't run while the terminal is open.
     Orders(OrdersEditor),
+    /// Held too: the Split is set between hours.
+    Crew(CrewScreen),
 }
 
 struct App {
@@ -100,6 +106,7 @@ impl App {
                 match key {
                     Some(KeyCode::Escape) => return false,
                     Some(KeyCode::O) => self.screen = Screen::Orders(OrdersEditor::new()),
+                    Some(KeyCode::C) => self.screen = Screen::Crew(CrewScreen::new(&self.world)),
                     Some(KeyCode::Space) => self.paused = !self.paused,
                     Some(KeyCode::Key1) => self.speed = 1,
                     Some(KeyCode::Key2) => self.speed = 2,
@@ -111,12 +118,8 @@ impl App {
                     while self.hour_accumulator >= SECONDS_PER_HOUR_AT_1X {
                         self.hour_accumulator -= SECONDS_PER_HOUR_AT_1X;
                         let at = self.world.now;
-                        for event in self.world.tick() {
-                            if self.log.len() == LOG_CAPACITY {
-                                self.log.pop_front();
-                            }
-                            self.log.push_back(colony_view::log_line(at, &event));
-                        }
+                        let events = self.world.tick();
+                        self.log_events(at, &events);
                     }
                 }
             }
@@ -127,8 +130,28 @@ impl App {
                     }
                 }
             }
+            Screen::Crew(screen) => {
+                if let Some(key) = key {
+                    let mut events = Vec::new();
+                    let outcome = screen.handle(key, &mut self.world, &mut events);
+                    let at = self.world.now;
+                    self.log_events(at, &events);
+                    if outcome == Outcome::Close {
+                        self.screen = Screen::Online;
+                    }
+                }
+            }
         }
         true
+    }
+
+    fn log_events(&mut self, at: Tick, events: &[SimEvent]) {
+        for event in events {
+            if self.log.len() == LOG_CAPACITY {
+                self.log.pop_front();
+            }
+            self.log.push_back(colony_view::log_line(at, event));
+        }
     }
 
     fn render(&mut self) {
@@ -170,7 +193,7 @@ impl App {
                 t.put_str(
                     MARGIN,
                     HELP_ROW,
-                    "[SPACE] PAUSE   [1] [2] [3] SPEED   [O] STANDING ORDERS   [ESC] SHUT DOWN",
+                    "[SPACE] PAUSE   [1-3] SPEED   [O] ORDERS   [C] CREW   [ESC] SHUT DOWN",
                     Ink::Dim,
                 );
             }
@@ -178,6 +201,11 @@ impl App {
                 let title = "MULLEIN SYSTEMS // CARETAKER TERMINAL";
                 draw_title(t, title, self.world.now, "HELD");
                 editor.draw(t, &self.world, HELP_ROW);
+            }
+            Screen::Crew(screen) => {
+                let title = "MULLEIN SYSTEMS // CREW QUARTERS";
+                draw_title(t, title, self.world.now, "HELD");
+                screen.draw(t, &self.world, HELP_ROW);
             }
         }
         t.draw();

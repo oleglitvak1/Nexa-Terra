@@ -93,6 +93,16 @@ impl Colony {
         &self.modules
     }
 
+    /// Saves from before `ModuleKind` load every module as Utility. Their habs
+    /// were the `hab_*` modules, which all had a machine.
+    pub(crate) fn mark_legacy_habs(&mut self) {
+        for m in &mut self.modules {
+            if m.def.id.as_str().starts_with("hab_") && m.def.machine.is_some() {
+                m.def.kind = ModuleKind::Hab;
+            }
+        }
+    }
+
     pub fn module(&self, id: &ModuleId) -> Option<&Module> {
         self.modules.iter().find(|m| m.id() == id)
     }

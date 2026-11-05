@@ -3,6 +3,13 @@
 use crate::terminal::{Ink, Terminal};
 use macroquad::prelude::KeyCode;
 
+/// What a key did to a screen: keep showing it, or go back to the colony.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Stay,
+    Close,
+}
+
 /// What a key did to a [`ListPicker`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {

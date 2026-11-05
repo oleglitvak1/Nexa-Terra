@@ -5,7 +5,7 @@
 //! checks each card before storing it.
 
 use crate::terminal::{Ink, Terminal};
-use crate::ui::{wrap, ListPicker, Pick};
+use crate::ui::{wrap, ListPicker, Outcome, Pick};
 use macroquad::prelude::KeyCode;
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::orders::{
@@ -67,12 +67,6 @@ impl TempSide {
             TempSide::Above => Trigger::TempAbove { module, centi_c },
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
-    Stay,
-    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

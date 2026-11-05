@@ -18,6 +18,7 @@ before changing either; update the docs in the same commit when a decision chang
 cargo run                                   # play (nexa-game is the default member)
 cargo run -p nexa-tools -- 45               # run the sim headless for 45 Sols
 cargo run -p nexa-tools -- 10 --orders caretaker   # ... under a Standing Orders preset
+cargo run -p nexa-tools -- 10 --split cal,oron     # ... with a confirmed Split
 cargo test --workspace                      # all tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
