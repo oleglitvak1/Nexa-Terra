@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn caretaker_orders_keep_the_crew_calm() {
         let mut world = with_preset("caretaker");
-        let events = run_sols(&mut world, 10);
+        let events = run_sols(&mut world, 45);
         assert!(!events
             .iter()
             .any(|e| matches!(e, SimEvent::CrewStressChanged { .. })));

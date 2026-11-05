@@ -439,17 +439,20 @@ impl Crew {
 
     /// One hour of stress and morale, given the state of each hab's machine.
     /// Ground crew feel their own bunk; Father's Vigilance also feels any
-    /// child's bunk going cold, wherever the holder is. Morale follows stress.
+    /// Ground child's bunk going cold, wherever the holder is. Morale follows
+    /// stress.
     pub fn step(
         &mut self,
         bunk_state: impl Fn(&ModuleId) -> Option<MachineState>,
     ) -> Vec<SimEvent> {
         let t = self.roster.tuning;
+        let on_ground = |c: &CrewMember| self.assignments.get(&c.id) == Some(&Assignment::Ground);
+        // A flying child isn't in their bunk, so its cold exposes no one.
         let child_cold = self
             .roster
             .crew
             .iter()
-            .any(|c| !c.adult && is_cold(bunk_state(&c.bunk)));
+            .any(|c| !c.adult && on_ground(c) && is_cold(bunk_state(&c.bunk)));
         let mut events = Vec::new();
         for c in &self.roster.crew {
             let mut change = 0i32;
@@ -470,7 +473,8 @@ impl Crew {
             };
             let stress = (i32::from(v.stress_bp) + change).clamp(0, i32::from(MAX_BP));
             v.stress_bp = stress as u16;
-            if v.stress_bp > t.strained_bp {
+            // Same edges as the levels: strained from its threshold, calm below its own.
+            if v.stress_bp >= t.strained_bp {
                 v.morale_bp = v.morale_bp.saturating_sub(t.morale_fall_bp);
             } else if v.stress_bp < t.calm_bp {
                 v.morale_bp = (v.morale_bp + t.morale_recover_bp).min(MAX_BP);
@@ -882,6 +886,21 @@ mod tests {
     }
 
     #[test]
+    fn jonathan_ignores_mayas_empty_bunk_while_she_flies() {
+        let mut crew = Crew::new(shipped());
+        let flight = [
+            (id("cal"), Assignment::Flight),
+            (id("jonathan"), Assignment::Flight),
+            (id("maya"), Assignment::Flight),
+        ];
+        crew.confirm_split(&flight.into_iter().collect()).unwrap();
+        step_with(&mut crew, &COLD_01);
+        assert_eq!(stress(&crew, "jonathan"), 0);
+        assert_eq!(stress(&crew, "maya"), 0);
+        assert_eq!(stress(&crew, "elena"), 160);
+    }
+
+    #[test]
     fn flight_crew_are_not_stressed_by_their_bunks() {
         let mut crew = Crew::new(shipped());
         let flight = [(id("cal"), Assignment::Flight)];
@@ -895,7 +914,8 @@ mod tests {
     fn morale_falls_when_strained_and_recovers_when_calm() {
         let mut crew = Crew::new(shipped());
         crew.vitals.get_mut(&id("cal")).unwrap().morale_bp = 5000;
-        for (stress_bp, expected) in [(6000, 4940), (4000, 4940), (2000, 4965)] {
+        // Morale falls from the strained threshold itself, like the level.
+        for (stress_bp, expected) in [(6000, 4940), (5000, 4880), (4000, 4880), (2000, 4905)] {
             set_stress(&mut crew, "cal", stress_bp);
             // Overheat holds stress where it is.
             step_with(&mut crew, &[("hab_02", MachineState::Overheat)]);

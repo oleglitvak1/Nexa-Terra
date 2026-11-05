@@ -11,7 +11,7 @@
 use nexa_sim::crew::{Assignment, StressLevel};
 use nexa_sim::orders::OrdersDef;
 use nexa_sim::{SimEvent, World};
-use nexa_types::{CrewId, TICKS_PER_SOL};
+use nexa_types::{CrewId, Tick, TICKS_PER_SOL};
 use std::collections::BTreeMap;
 
 /// The vertical slice's length: the scrubbers' filter life.
@@ -105,49 +105,21 @@ fn main() {
         }
     }
 
+    let mut fires = vec![0u64; world.orders.len()];
     if let Some(list) = &split {
-        if let Err(e) = world.confirm_split(&parse_split(list)) {
-            usage(&format!("split {list:?}: {e}"));
+        // Log what the sim confirmed, not what was typed.
+        let now = world.now;
+        match world.confirm_split(&parse_split(list)) {
+            Ok(events) => events.iter().for_each(|e| log_event(now, e, &mut fires)),
+            Err(e) => usage(&format!("split {list:?}: {e}")),
         }
-        println!("[SIM] split confirmed, flying: {list}");
     }
 
-    let mut fires = vec![0u64; world.orders.len()];
     let mut tally = CrewTally::new(&world);
     for _ in 0..sols * TICKS_PER_SOL {
         let now = world.now;
         for event in world.tick() {
-            match event {
-                SimEvent::SolStarted { sol } => println!("[SIM] SOL {sol:03} BEGINS"),
-                SimEvent::MachineStateChanged { module, state } => {
-                    println!("[SIM] {now}  {module} -> {}", state.label())
-                }
-                // Swinging heat between habs fires every couple of hours: list a
-                // card's first firing, count the rest.
-                SimEvent::OrderFired { slot, order } => {
-                    if fires[slot] == 0 {
-                        println!("[SIM] {now}  order {} fires: {}", slot + 1, order.render());
-                    }
-                    fires[slot] += 1;
-                }
-                SimEvent::OrderActionSkipped {
-                    slot,
-                    action,
-                    reason,
-                } => println!(
-                    "[SIM] {now}  order {} {}: {}",
-                    slot + 1,
-                    reason.label(),
-                    action.render()
-                ),
-                SimEvent::SplitConfirmed { flight } => {
-                    let names: Vec<_> = flight.iter().map(|c| c.as_str()).collect();
-                    println!("[SIM] {now}  split confirmed, flying: {}", names.join(", "))
-                }
-                SimEvent::CrewStressChanged { crew, level } => {
-                    println!("[SIM] {now}  {crew} is {}", level.label())
-                }
-            }
+            log_event(now, &event, &mut fires);
         }
         tally.record(&world);
     }
@@ -197,6 +169,41 @@ fn main() {
     }
 }
 
+/// One line per event; `fires` counts each order slot's firings.
+fn log_event(now: Tick, event: &SimEvent, fires: &mut [u64]) {
+    match event {
+        SimEvent::SolStarted { sol } => println!("[SIM] SOL {sol:03} BEGINS"),
+        SimEvent::MachineStateChanged { module, state } => {
+            println!("[SIM] {now}  {module} -> {}", state.label())
+        }
+        // Swinging heat between habs fires every couple of hours: list a
+        // card's first firing, count the rest.
+        SimEvent::OrderFired { slot, order } => {
+            if fires[*slot] == 0 {
+                println!("[SIM] {now}  order {} fires: {}", slot + 1, order.render());
+            }
+            fires[*slot] += 1;
+        }
+        SimEvent::OrderActionSkipped {
+            slot,
+            action,
+            reason,
+        } => println!(
+            "[SIM] {now}  order {} {}: {}",
+            slot + 1,
+            reason.label(),
+            action.render()
+        ),
+        SimEvent::SplitConfirmed { flight } => {
+            let names: Vec<_> = flight.iter().map(|c| c.as_str()).collect();
+            println!("[SIM] {now}  split confirmed, flying: {}", names.join(", "))
+        }
+        SimEvent::CrewStressChanged { crew, level } => {
+            println!("[SIM] {now}  {crew} is {}", level.label())
+        }
+    }
+}
+
 fn usage(problem: &str) -> ! {
     let presets: Vec<&str> = OrdersDef::shipped()
         .presets
@@ -236,8 +243,14 @@ mod tests {
             world.tick();
             tally.record(&world);
         }
-        let jonathan = 0;
-        let v = world.crew.vitals(&CrewId::new("jonathan")).unwrap();
+        let id = CrewId::new("jonathan");
+        let jonathan = world
+            .crew
+            .members()
+            .iter()
+            .position(|c| c.id == id)
+            .unwrap();
+        let v = world.crew.vitals(&id).unwrap();
         assert_eq!(v.level, StressLevel::Breaking);
         assert!(tally.peak_bp[jonathan] >= v.stress_bp);
         assert!(tally.strained_hours[jonathan] > 0);

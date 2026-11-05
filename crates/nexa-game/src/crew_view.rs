@@ -107,12 +107,15 @@ impl CrewScreen {
             }
             KeyCode::Enter | KeyCode::KpEnter => match world.confirm_split(&self.draft) {
                 Ok(confirmed) => {
-                    let flying = self
-                        .draft
-                        .values()
-                        .filter(|&&a| a == Assignment::Flight)
-                        .count();
-                    let staying = self.draft.len() - flying;
+                    // Count what the sim confirmed, not the draft.
+                    let flying = confirmed
+                        .iter()
+                        .find_map(|e| match e {
+                            SimEvent::SplitConfirmed { flight } => Some(flight.len()),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let staying = world.crew.members().len() - flying;
                     self.message = Some(format!("SPLIT CONFIRMED: {flying} FLY, {staying} STAY"));
                     events.extend(confirmed);
                 }
