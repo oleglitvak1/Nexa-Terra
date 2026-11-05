@@ -1,10 +1,12 @@
 //! The crew: who they are, what they're rated at, where they sleep, and the
 //! Split rules for who flies and who stays on the ground.
 //!
-//! Stress and morale tuning is loaded and checked here; nothing steps it yet.
-//! [`Crew`] is the part of the world that holds them and the confirmed Split.
+//! [`Crew`] is the part of the world that holds them, the confirmed Split,
+//! and each member's stress and morale, stepped once an hour.
 
 use crate::colony::{Colony, Module, ModuleKind};
+use crate::machines::MachineState;
+use crate::SimEvent;
 use nexa_types::{CrewId, ModuleId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -159,10 +161,13 @@ pub enum CrewError {
         field: &'static str,
         bp: u16,
     },
-    /// A saved Split doesn't give exactly one side to each crew member.
-    SplitMismatch,
+    /// A saved Split or set of vitals doesn't list exactly the crew.
+    CrewMismatch,
     /// A saved Split breaks the Split rules.
     BadSplit(SplitError),
+    /// A crew member's saved stress or morale is missing, out of range, or at
+    /// a level its stress can't be at.
+    BadVitals(CrewId),
 }
 
 impl std::fmt::Display for CrewError {
@@ -193,10 +198,11 @@ impl std::fmt::Display for CrewError {
             CrewError::RateOutOfRange { field, bp } => {
                 write!(f, "{field} is {bp}, above {MAX_BP}")
             }
-            CrewError::SplitMismatch => {
-                write!(f, "the saved Split doesn't list exactly the crew")
+            CrewError::CrewMismatch => {
+                write!(f, "the saved Split or vitals don't list exactly the crew")
             }
             CrewError::BadSplit(e) => write!(f, "the saved Split is refused: {e}"),
+            CrewError::BadVitals(id) => write!(f, "{id}'s saved stress or morale is invalid"),
         }
     }
 }
@@ -325,6 +331,73 @@ pub fn check_split(
     Ok(())
 }
 
+/// How hard stress is pressing on someone. Levels have no consequences yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StressLevel {
+    Calm,
+    Strained,
+    Breaking,
+}
+
+impl StressLevel {
+    pub fn label(self) -> &'static str {
+        match self {
+            StressLevel::Calm => "calm",
+            StressLevel::Strained => "strained",
+            StressLevel::Breaking => "breaking",
+        }
+    }
+
+    /// The level after stress moves to `stress_bp`. A level is reached at its
+    /// threshold but only left below the threshold under it, so a bunk
+    /// flickering in and out of Freeze doesn't announce a level every hour.
+    fn next(self, stress_bp: u16, t: &CrewTuning) -> Self {
+        use StressLevel::*;
+        if stress_bp >= t.breaking_bp {
+            Breaking
+        } else if stress_bp < t.calm_bp {
+            Calm
+        } else if stress_bp >= t.strained_bp {
+            // Between strained and breaking: Breaking holds, Calm rises.
+            if self == Breaking {
+                Breaking
+            } else {
+                Strained
+            }
+        } else if self == Breaking {
+            // Between calm and strained: Calm holds, Breaking eases.
+            Strained
+        } else {
+            self
+        }
+    }
+}
+
+/// One crew member's changing state; both values are basis points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vitals {
+    pub stress_bp: u16,
+    pub morale_bp: u16,
+    /// The last level announced; see [`StressLevel::next`].
+    pub level: StressLevel,
+}
+
+impl Vitals {
+    const LANDFALL: Self = Self {
+        stress_bp: 0,
+        morale_bp: MAX_BP,
+        level: StressLevel::Calm,
+    };
+}
+
+/// A bunk counts as cold while its hab is in Freeze or has failed.
+fn is_cold(state: Option<MachineState>) -> bool {
+    matches!(
+        state,
+        Some(MachineState::Freeze | MachineState::Offline | MachineState::Burnout)
+    )
+}
+
 /// The crew aboard a world: their content and the side each is on.
 /// Fields are private so a `Crew` is only built checked (or loaded and then
 /// checked by `World`).
@@ -333,19 +406,18 @@ pub struct Crew {
     roster: Roster,
     /// One entry per crew member; all Ground until a Split is confirmed.
     assignments: BTreeMap<CrewId, Assignment>,
+    /// One entry per crew member.
+    vitals: BTreeMap<CrewId, Vitals>,
 }
 
 impl Crew {
-    /// Everyone starts on the Ground.
+    /// Everyone starts on the Ground, calm, with full morale.
     pub fn new(roster: Roster) -> Self {
-        let assignments = roster
-            .crew
-            .iter()
-            .map(|c| (c.id.clone(), Assignment::Ground))
-            .collect();
+        let ids = || roster.crew.iter().map(|c| c.id.clone());
         Self {
+            assignments: ids().map(|id| (id, Assignment::Ground)).collect(),
+            vitals: ids().map(|id| (id, Vitals::LANDFALL)).collect(),
             roster,
-            assignments,
         }
     }
 
@@ -359,6 +431,60 @@ impl Crew {
 
     pub fn assignment(&self, id: &CrewId) -> Option<Assignment> {
         self.assignments.get(id).copied()
+    }
+
+    pub fn vitals(&self, id: &CrewId) -> Option<&Vitals> {
+        self.vitals.get(id)
+    }
+
+    /// One hour of stress and morale, given the state of each hab's machine.
+    /// Ground crew feel their own bunk; Father's Vigilance also feels any
+    /// child's bunk going cold, wherever the holder is. Morale follows stress.
+    pub fn step(
+        &mut self,
+        bunk_state: impl Fn(&ModuleId) -> Option<MachineState>,
+    ) -> Vec<SimEvent> {
+        let t = self.roster.tuning;
+        let child_cold = self
+            .roster
+            .crew
+            .iter()
+            .any(|c| !c.adult && is_cold(bunk_state(&c.bunk)));
+        let mut events = Vec::new();
+        for c in &self.roster.crew {
+            let mut change = 0i32;
+            if self.assignments.get(&c.id) == Some(&Assignment::Ground) {
+                let state = bunk_state(&c.bunk);
+                if is_cold(state) {
+                    change += i32::from(t.stress_rise_cold_bp);
+                } else if state == Some(MachineState::Nominal) {
+                    change -= i32::from(t.stress_recover_bp);
+                }
+            }
+            if c.trait_ == Trait::FathersVigilance && child_cold {
+                change += i32::from(t.vigilance_extra_bp);
+            }
+            // Every member has vitals once checked; skip rather than panic.
+            let Some(v) = self.vitals.get_mut(&c.id) else {
+                continue;
+            };
+            let stress = (i32::from(v.stress_bp) + change).clamp(0, i32::from(MAX_BP));
+            v.stress_bp = stress as u16;
+            if v.stress_bp > t.strained_bp {
+                v.morale_bp = v.morale_bp.saturating_sub(t.morale_fall_bp);
+            } else if v.stress_bp < t.calm_bp {
+                v.morale_bp = (v.morale_bp + t.morale_recover_bp).min(MAX_BP);
+            }
+            let level = v.level.next(v.stress_bp, &t);
+            if level != v.level {
+                v.level = level;
+                events.push(SimEvent::CrewStressChanged {
+                    crew: c.id.clone(),
+                    level,
+                });
+            }
+        }
+        events
     }
 
     /// Check the Split and, if it passes, make it the crew's assignments.
@@ -382,18 +508,32 @@ impl Crew {
     }
 
     /// What a loaded save must satisfy: valid content for `colony`, one side
-    /// per crew member, and either nobody flying or a Split that passes.
+    /// per crew member, either nobody flying or a Split that passes, and
+    /// stress and morale in range at a level that fits.
     pub fn check(&self, colony: &Colony) -> Result<(), CrewError> {
         self.roster.check(colony)?;
-        // Roster ids are unique, so equal counts plus containment is an exact match.
-        let every_member_listed = self.assignments.len() == self.roster.crew.len()
-            && self
-                .roster
-                .crew
+        if self.assignments.len() != self.roster.crew.len()
+            || !self
+                .members()
                 .iter()
-                .all(|c| self.assignments.contains_key(&c.id));
-        if !every_member_listed {
-            return Err(CrewError::SplitMismatch);
+                .all(|c| self.assignments.contains_key(&c.id))
+        {
+            return Err(CrewError::CrewMismatch);
+        }
+        let t = &self.roster.tuning;
+        let vitals_ok = |v: &Vitals| {
+            v.stress_bp <= MAX_BP
+                && v.morale_bp <= MAX_BP
+                && v.level.next(v.stress_bp, t) == v.level
+        };
+        for c in self.members() {
+            if !self.vitals.get(&c.id).is_some_and(vitals_ok) {
+                return Err(CrewError::BadVitals(c.id.clone()));
+            }
+        }
+        // Every member has an entry, so a longer map holds someone else too.
+        if self.vitals.len() != self.roster.crew.len() {
+            return Err(CrewError::CrewMismatch);
         }
         let anyone_flying = self.assignments.values().any(|&a| a == Assignment::Flight);
         if anyone_flying {
@@ -408,6 +548,8 @@ impl Crew {
 mod tests {
     use super::*;
     use crate::colony::LANDING_ASH_PLAIN;
+    use crate::machines::MachineState;
+    use crate::SimEvent;
 
     fn ash_plain() -> Colony {
         Colony::from_ron(LANDING_ASH_PLAIN).unwrap()
@@ -634,5 +776,168 @@ mod tests {
         assignments.insert(id("cal"), Assignment::Flight);
         assignments.insert(id("elena"), Assignment::Ground);
         assert_eq!(check_split(&r.crew, &r.tuning, &assignments), Ok(()));
+    }
+
+    // Stress and morale. Shipped tuning: rise 160, recover 55, vigilance 150,
+    // calm 2500, strained 5000, breaking 8000, morale fall 60, recover 25.
+
+    /// Steps `crew` one hour with each hab in the given state.
+    fn step_with(crew: &mut Crew, habs: &[(&str, MachineState)]) -> Vec<SimEvent> {
+        crew.step(|bunk| {
+            habs.iter()
+                .find(|(id, _)| bunk.as_str() == *id)
+                .map(|&(_, state)| state)
+        })
+    }
+
+    fn stress(crew: &Crew, who: &str) -> u16 {
+        crew.vitals(&id(who)).unwrap().stress_bp
+    }
+
+    fn morale(crew: &Crew, who: &str) -> u16 {
+        crew.vitals(&id(who)).unwrap().morale_bp
+    }
+
+    fn set_stress(crew: &mut Crew, who: &str, bp: u16) {
+        crew.vitals.get_mut(&id(who)).unwrap().stress_bp = bp;
+    }
+
+    fn levels(events: &[SimEvent]) -> Vec<(&str, StressLevel)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SimEvent::CrewStressChanged { crew, level } => Some((crew.as_str(), *level)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    const COLD_01: [(&str, MachineState); 2] = [
+        ("hab_01", MachineState::Freeze),
+        ("hab_02", MachineState::Nominal),
+    ];
+
+    #[test]
+    fn the_crew_lands_calm_and_in_good_spirits() {
+        let crew = Crew::new(shipped());
+        for c in crew.members() {
+            let v = crew.vitals(&c.id).unwrap();
+            assert_eq!(
+                (v.stress_bp, v.morale_bp, v.level),
+                (0, MAX_BP, StressLevel::Calm)
+            );
+        }
+    }
+
+    #[test]
+    fn a_cold_bunk_raises_stress_each_hour() {
+        let mut crew = Crew::new(shipped());
+        step_with(&mut crew, &COLD_01);
+        step_with(&mut crew, &COLD_01);
+        assert_eq!(stress(&crew, "elena"), 320);
+        assert_eq!(stress(&crew, "maya"), 320);
+        assert_eq!(stress(&crew, "cal"), 0, "hab_02 is nominal");
+    }
+
+    #[test]
+    fn failed_bunks_are_cold_and_overheat_is_neither() {
+        for (state, expected) in [
+            (MachineState::Offline, 1160),
+            (MachineState::Burnout, 1160),
+            (MachineState::Overheat, 1000),
+            (MachineState::Nominal, 945),
+        ] {
+            let mut crew = Crew::new(shipped());
+            set_stress(&mut crew, "cal", 1000);
+            step_with(&mut crew, &[("hab_02", state)]);
+            assert_eq!(stress(&crew, "cal"), expected, "{state:?}");
+        }
+    }
+
+    #[test]
+    fn stress_stays_within_its_range() {
+        let mut crew = Crew::new(shipped());
+        step_with(&mut crew, &[("hab_02", MachineState::Nominal)]);
+        assert_eq!(stress(&crew, "cal"), 0);
+        set_stress(&mut crew, "cal", MAX_BP - 10);
+        step_with(&mut crew, &[("hab_02", MachineState::Freeze)]);
+        assert_eq!(stress(&crew, "cal"), MAX_BP);
+    }
+
+    #[test]
+    fn jonathan_feels_mayas_cold_bunk_wherever_he_is() {
+        let mut crew = Crew::new(shipped());
+        step_with(&mut crew, &COLD_01);
+        assert_eq!(stress(&crew, "jonathan"), 160 + 150);
+
+        let mut crew = Crew::new(shipped());
+        let flight = [
+            (id("cal"), Assignment::Flight),
+            (id("jonathan"), Assignment::Flight),
+        ];
+        crew.confirm_split(&flight.into_iter().collect()).unwrap();
+        step_with(&mut crew, &COLD_01);
+        assert_eq!(stress(&crew, "jonathan"), 150, "only vigilance aboard");
+        assert_eq!(stress(&crew, "elena"), 160);
+    }
+
+    #[test]
+    fn flight_crew_are_not_stressed_by_their_bunks() {
+        let mut crew = Crew::new(shipped());
+        let flight = [(id("cal"), Assignment::Flight)];
+        crew.confirm_split(&flight.into_iter().collect()).unwrap();
+        step_with(&mut crew, &[("hab_02", MachineState::Offline)]);
+        assert_eq!(stress(&crew, "cal"), 0);
+        assert_eq!(stress(&crew, "dax"), 160);
+    }
+
+    #[test]
+    fn morale_falls_when_strained_and_recovers_when_calm() {
+        let mut crew = Crew::new(shipped());
+        crew.vitals.get_mut(&id("cal")).unwrap().morale_bp = 5000;
+        for (stress_bp, expected) in [(6000, 4940), (4000, 4940), (2000, 4965)] {
+            set_stress(&mut crew, "cal", stress_bp);
+            // Overheat holds stress where it is.
+            step_with(&mut crew, &[("hab_02", MachineState::Overheat)]);
+            assert_eq!(morale(&crew, "cal"), expected, "stress {stress_bp}");
+        }
+        assert_eq!(morale(&crew, "dax"), MAX_BP, "full morale stays full");
+    }
+
+    #[test]
+    fn crossing_a_stress_level_is_announced_once() {
+        let mut crew = Crew::new(shipped());
+        let cold = [("hab_02", MachineState::Freeze)];
+        let warm = [("hab_02", MachineState::Nominal)];
+        set_stress(&mut crew, "cal", 4900);
+        let events = step_with(&mut crew, &cold);
+        assert_eq!(levels(&events), [("cal", StressLevel::Strained)]);
+        // A bunk flickering cold and warm moves stress back and forth across
+        // the line; that doesn't re-announce it.
+        for _ in 0..5 {
+            set_stress(&mut crew, "cal", 5010);
+            assert_eq!(levels(&step_with(&mut crew, &warm)), []);
+            assert_eq!(stress(&crew, "cal"), 4955);
+            assert_eq!(levels(&step_with(&mut crew, &cold)), []);
+        }
+        // Strained eases back to Calm only below the calm threshold.
+        set_stress(&mut crew, "cal", 2555);
+        assert_eq!(levels(&step_with(&mut crew, &warm)), []);
+        assert_eq!(
+            levels(&step_with(&mut crew, &warm)),
+            [("cal", StressLevel::Calm)]
+        );
+        set_stress(&mut crew, "cal", 7900);
+        assert_eq!(
+            levels(&step_with(&mut crew, &cold)),
+            [("cal", StressLevel::Breaking)]
+        );
+        // Breaking eases to Strained only below the strained threshold.
+        set_stress(&mut crew, "cal", 5100);
+        assert_eq!(levels(&step_with(&mut crew, &warm)), []);
+        assert_eq!(
+            levels(&step_with(&mut crew, &warm)),
+            [("cal", StressLevel::Strained)]
+        );
     }
 }

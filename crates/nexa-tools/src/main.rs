@@ -83,6 +83,9 @@ fn main() {
                     let names: Vec<_> = flight.iter().map(|c| c.as_str()).collect();
                     println!("[SIM] {now}  split confirmed, flying: {}", names.join(", "))
                 }
+                SimEvent::CrewStressChanged { crew, level } => {
+                    println!("[SIM] {now}  {crew} is {}", level.label())
+                }
             }
         }
     }

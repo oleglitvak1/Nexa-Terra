@@ -67,6 +67,11 @@ pub fn log_line(at: Tick, event: &SimEvent) -> String {
         SimEvent::SplitConfirmed { flight } => {
             format!("{at} SPLIT CONFIRMED {} FLY", flight.len())
         }
+        SimEvent::CrewStressChanged { crew, level } => format!(
+            "{at} {} {}",
+            crew.as_str().to_uppercase(),
+            level.label().to_uppercase()
+        ),
     }
 }
 
@@ -263,6 +268,15 @@ mod tests {
         let flight = ["cal", "oron"].map(nexa_types::CrewId::new).to_vec();
         let event = SimEvent::SplitConfirmed { flight };
         assert_eq!(log_line(Tick(3), &event), "S000 H03 SPLIT CONFIRMED 2 FLY");
+    }
+
+    #[test]
+    fn log_lines_name_who_is_stressed() {
+        let event = SimEvent::CrewStressChanged {
+            crew: nexa_types::CrewId::new("jonathan"),
+            level: nexa_sim::crew::StressLevel::Breaking,
+        };
+        assert_eq!(log_line(Tick(30), &event), "S001 H04 JONATHAN BREAKING");
     }
 
     #[test]

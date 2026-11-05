@@ -7,7 +7,7 @@
 //! - Must compile for `wasm32-unknown-unknown`.
 
 use colony::{Colony, CommandError, LANDING_ASH_PLAIN};
-use crew::{Assignment, Crew, CrewError, Roster, SplitError};
+use crew::{Assignment, Crew, CrewError, Roster, SplitError, StressLevel};
 use machines::MachineState;
 use nexa_types::{Command, CrewId, ModuleId, Tick, TICKS_PER_SOL};
 use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
@@ -118,6 +118,8 @@ pub enum SimEvent {
     },
     /// A Split passed its rules and is now the crew's assignments.
     SplitConfirmed { flight: Vec<CrewId> },
+    /// A crew member's stress reached a new level.
+    CrewStressChanged { crew: CrewId, level: StressLevel },
 }
 
 impl World {
@@ -146,6 +148,14 @@ impl World {
         // The Caretaker reads the gauges and acts, then the hour runs.
         let mut events = self.orders.evaluate(&mut self.colony);
         events.extend(self.colony.tick());
+        // The crew feel the hour that just ran.
+        let colony = &self.colony;
+        events.extend(self.crew.step(|bunk| {
+            colony
+                .module(bunk)
+                .and_then(|m| m.machine())
+                .map(|m| m.state())
+        }));
         self.now = Tick(self.now.0 + 1);
         if self.now.0.is_multiple_of(TICKS_PER_SOL) {
             events.push(SimEvent::SolStarted {
@@ -428,6 +438,9 @@ mod tests {
         reject("\"dax\":Ground,", "");
         // A flight that breaks the Split rules: Oron-3 can't fly alone.
         reject("\"cal\":Flight", "\"cal\":Ground");
+        // Stress past its range, and a level its stress can't be at.
+        reject("stress_bp:0", "stress_bp:10001");
+        reject("level:Calm", "level:Breaking");
     }
 
     fn hab_failures(events: &[SimEvent]) -> Vec<&SimEvent> {
@@ -448,6 +461,62 @@ mod tests {
         let mut world = World::landfall();
         let events = run_sols(&mut world, 10);
         assert_eq!(hab_failures(&events).len(), 2);
+    }
+
+    fn stress_levels(events: &[SimEvent], who: &str) -> Vec<StressLevel> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SimEvent::CrewStressChanged { crew, level } if crew.as_str() == who => Some(*level),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// With nobody tending the habs, everyone strains and then breaks, each
+    /// announced once, and Father's Vigilance breaks Jonathan first.
+    #[test]
+    fn unattended_ash_plain_breaks_the_crew() {
+        let mut world = World::landfall();
+        let events = run_sols(&mut world, 10);
+        for c in world.crew.members() {
+            assert_eq!(
+                stress_levels(&events, c.id.as_str()),
+                [StressLevel::Strained, StressLevel::Breaking],
+                "{}",
+                c.id
+            );
+            assert!(world.crew.vitals(&c.id).unwrap().morale_bp < crew::MAX_BP);
+        }
+        let first_break = events
+            .iter()
+            .find(|e| {
+                matches!(
+                    e,
+                    SimEvent::CrewStressChanged {
+                        level: StressLevel::Breaking,
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert!(matches!(
+            first_break,
+            SimEvent::CrewStressChanged { crew, .. } if crew.as_str() == "jonathan"
+        ));
+    }
+
+    #[test]
+    fn caretaker_orders_keep_the_crew_calm() {
+        let mut world = with_preset("caretaker");
+        let events = run_sols(&mut world, 10);
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, SimEvent::CrewStressChanged { .. })));
+        for c in world.crew.members() {
+            let v = world.crew.vitals(&c.id).unwrap();
+            assert_eq!((v.stress_bp, v.morale_bp), (0, crew::MAX_BP), "{}", c.id);
+        }
     }
 
     /// The Caretaker scenario: three cards keep both habs alive through Sol 10.
