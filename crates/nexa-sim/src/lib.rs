@@ -26,6 +26,7 @@ pub mod orders;
 pub mod parts;
 pub mod rng;
 pub mod ship;
+pub mod universe;
 
 /// The whole state of one player's game. Grows milestone by milestone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

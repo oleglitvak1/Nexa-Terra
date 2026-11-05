@@ -141,6 +141,33 @@ pub enum Command {
     Repair(ModuleId),
 }
 
+/// What the universe is told when a ship launches into The Slip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchContext {
+    pub destination: StationId,
+    /// Colony time at launch.
+    pub departure: Tick,
+    /// Nominal Sols of the leg.
+    pub transit_sols: u32,
+    /// Who flies, in roster order.
+    pub flight_crew: Vec<CrewId>,
+    /// Drawn from the colony's RNG, so an offline universe is deterministic.
+    pub seed: u64,
+}
+
+/// A hazard waiting on the route, `sol` Sols into the leg.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlipEvent {
+    pub sol: u32,
+    pub hazard: HazardId,
+}
+
+/// What the universe answers at launch: what lies on the route.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LaunchBriefing {
+    pub events: Vec<SlipEvent>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
