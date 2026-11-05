@@ -152,6 +152,8 @@ A typed-entry parser that produces the same enums can be added later; the slice 
 
   Rates and thresholds live in `content/crew.ron`. On the Ash Plain with nobody tending the habs, Jonathan strains on Sol 4 and breaks on Sol 5, and everyone has broken by Sol 8 (`unattended_ash_plain_breaks_the_crew`). The `caretaker` preset keeps everyone calm through Sol 45. The levels have no consequences yet; desertion, refusals and mistakes come with the systems that need them.
 
+**The crew screen** (`nexa-game/src/crew_view.rs`, `[C]` from the colony screen) lists the six crew with their side, stress (percent and level) and morale, and below the list the selected member's age, bunk, skills and trait. Space (or Left/Right) flips the selected member between Ground and Flight on a draft; changed sides are starred until confirmed. Enter confirms through `World::confirm_split`: a confirmed Split goes to the base log, and a refused one keeps the draft and shows the sim's `SplitError`. Esc drops an unconfirmed draft and returns to the colony. The colony is held while the screen is open.
+
 **Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
 
 ## Presentation layering plan
