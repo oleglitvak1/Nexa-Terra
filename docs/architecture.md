@@ -48,8 +48,8 @@ One Cargo workspace with five crates; dependencies only point downward toward `n
                                  |
                                  v
    +-----------------------------------------------------------+
-   | nexa-types: shared serde data: IDs, commands, events, the  |
-   | Universe trait, universe messages                          |
+   | nexa-types: shared serde data: IDs, commands, events,      |
+   | universe messages (LaunchContext, LaunchBriefing, ...)     |
    +-----------------------------------------------------------+
 ```
 
@@ -73,8 +73,11 @@ The sim is a pure state machine: `World` + `Command` → new `World` + a list of
 
 ```rust
 pub fn apply(world: &mut World, cmd: Command) -> Result<Vec<SimEvent>, CommandError>;
-pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; // one fixed step
+pub fn tick(world: &mut World) -> Vec<SimEvent>; // one fixed step
+pub fn launch(world: &mut World, universe: &mut dyn Universe) -> Result<Vec<SimEvent>, LaunchError>;
 ```
+
+The universe is reached only at the sync points (launch now, docking in milestone 6), so it is passed to the call that syncs, not to every tick. `tick` stays universe-free.
 
 **Time.** The base unit is a fixed tick (26 ticks per Sol: one per hour of Nexa Terra's 26-hour day). The sim never reads the clock. The front end decides how fast ticks advance (paused, 1x, fast-forward), so the colony runs real-time with pause while flight and station phases advance in discrete event steps.
 
@@ -86,14 +89,17 @@ pub fn tick(world: &mut World, universe: &mut dyn Universe) -> Vec<SimEvent>; //
 | `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef`, `ModuleKind` (Utility, Hab) |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
+| `check` | The one skill-check function every hazard (and later haggle) uses | `check()`, `CheckDef`, `CheckTuning`, `Roll`, `Outcome` (Success, Partial, Fail) |
+| `ship` | *The Mullein*: tank, ECM pods, cargo manifest, where she is | `Ship`, `ShipDef`, `OreCrate`, `ShipLocation` (Pad, InSlip, Holding) |
 | `crew` | Six named specialists, skills, stress, morale, assignments, the Split rules | `CrewId`, `CrewMember`, `Skill`, `Trait`, `Assignment` (Ground, Flight), `SplitError` |
 | `orders` | Standing Orders rule cards: typed model + evaluator, run each tick from `World::tick` | `Trigger`, `Action`, `StandingOrder`, `Orders`, `render()`, `evaluate()` |
-| `flight` | The Slip transit, fuel, cargo integrity, delays | `Voyage`, `Manifest`, `HazardEvent`, `Resolution` |
+| `flight` | The Slip: launch, transit Sol by Sol, hazards and their options, delays and the random-delay cap, arrival | `Voyage`, `HazardsDef`, `HazardDef`, `HazardOption`, `Toll`, `Resolution`, `FlightError` |
+| `universe` | The `Universe` trait and `OfflineUniverse` | `Universe`, `OfflineUniverse` |
 | `station` | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
 | `echoes` | Logged moral choices and their delayed payoffs | `EchoSeed`, `EchoTrigger` |
 | `epochs` | Atmosphere state and epoch milestones | `Atmosphere` (pressure, temp, toxicity, water), `Epoch` |
 | `blackbox` | Log of everything that happened while the crew was away | `LogEntry`, `Reconciliation` |
-| `rng` | The only source of randomness | `SimRng` (seeded, serializable, e.g. ChaCha8) |
+| `rng` | The only source of randomness | `SimRng` (SplitMix64: seeded, serializable, no extra crate) |
 
 **Colony grid model.** The colony steps once per tick (one planetary hour), in three phases. All numbers are integers and live in the content file.
 
@@ -135,14 +141,14 @@ A typed-entry parser that produces the same enums can be added later; the slice 
 
 **Crew and the Split.** The six crew come from `content/crew.ron`. Each has a `CrewId` (`cal`, `maya`, ...), a display name, an `adult` flag, skill ratings 0 to 5 per `Skill` (Piloting, Engineering, Medicine, Negotiation, Astrogation, Sensors, Rigging), one `Trait` (their psychological dynamic) and a bunk hab. A hab is a module with `kind: Hab` in the colony content, and a hab must have a machine. Content is checked at load: exactly six crew, unique IDs, no unknown fields, every bunk a hab in the colony, `pilot_min` from 1 to 5, at least one qualified pilot, stress thresholds 0 < calm < strained < breaking <= 10000 and rates <= 10000. Like the colony, `World.crew` (a `Crew`: the roster plus one `Assignment` per member) keeps its content definitions in the save. A save is refused if its crew fails those content checks, doesn't give exactly one side to each member, or has anyone flying under a Split that breaks the rules below. Saves from before crew get the shipped roster, all on the Ground, checked against that save's colony (`Roster::shipped`). Those saves also predate `ModuleKind`, so their `hab_*` modules are marked as habs on that path (`saves_from_before_crew_get_the_shipped_crew_and_their_habs`).
 
-- **Specializations are data only for now.** Surface and flight specializations (Jonathan's wider tolerances, Cal's shift discipline, Maya's duct runs, ...) take effect when the systems they touch exist. Until then they are shown, not applied.
+- **Specializations apply when their systems exist.** Three flight specializations apply from milestone 5 as skill-check bonuses, listed by `CrewId` per hazard option in `content/hazards.ron`: Cal on the countermeasure (Master Aviator), Jonathan on the Overclock Burn (Reactor Overclocking) and Dax on the bluff (The Face). A bonus counts only while that member is on the Flight side. The others (Jonathan's wider tolerances, Cal's shift discipline, Maya's duct runs, Oron-3's transit-day shaving, ...) are shown, not applied, until the systems they touch exist.
 - **The Split.** Each crew member's `Assignment` is Ground or Flight; everyone starts on Ground. The player opens the crew screen (`[C]` from the colony screen) at any time and confirms through `World::confirm_split`, which enforces the two rules and refuses with a `SplitError`:
   - `NoQualifiedPilot`: no Flight crew member has Piloting at or above `pilot_min` (Cal only, on current content). Non-pilots flying by manual is out of slice scope.
   - `MayaWithoutAdult { child }`: Maya's side (Ground or Flight) has no other crew member with `adult: true`. Oron-3 counts as an adult. The rule applies to every crew member with `adult: false`; `child` names the one left uncovered.
 
   An assignment naming someone not in the crew is refused with `UnknownCrew`; crew left out of the assignments go to the Ground, so confirming again replaces the whole Split. A refused Split leaves the current one in place.
 
-  Those are the only rules: everyone flying is allowed, and so is Maya flying. A confirmed Split emits `SimEvent::SplitConfirmed { flight }`, listing who flies in roster order; the base log shows how many. Launch is milestone 5; until then confirming only records the assignment.
+  Those are the only rules: everyone flying is allowed, and so is Maya flying. A confirmed Split emits `SimEvent::SplitConfirmed { flight }`, listing who flies in roster order; the base log shows how many. Launching *The Mullein* needs a confirmed Split with at least one Flight member (see *The Slip* below); while she is away the Split can't change (`SplitError::ShipAway`).
 - **Stress and morale.** Both are integers in basis points (0 to 10000), kept per crew member in the save (`Vitals`), and stepped once per tick after the colony's hour (`Crew::step`). The crew land with no stress and full morale.
   - *Bunks:* a Ground crew member's stress rises while their bunk hab is cold (in Freeze or failed), recovers while it's nominal, and holds while it overheats. Flight crew aren't affected by their bunks.
   - *Father's Vigilance:* Jonathan gains extra stress while Maya is on the Ground and her bunk is cold, wherever he is. A flying Maya isn't in her bunk, so its cold doesn't count. In code that's any crew member with the trait, while any Ground child's (`adult: false`) bunk is cold.
@@ -154,7 +160,18 @@ A typed-entry parser that produces the same enums can be added later; the slice 
 
 **The crew screen** (`nexa-game/src/crew_view.rs`, `[C]` from the colony screen) lists the six crew with their side, stress (percent and level) and morale, and below the list the selected member's age, bunk, skills and trait. Space (or Left/Right) flips the selected member between Ground and Flight on a draft; changed sides are starred until confirmed. Enter confirms through `World::confirm_split`: a confirmed Split goes to the base log, and a refused one keeps the draft and shows the sim's `SplitError`. Esc drops an unconfirmed draft and returns to the colony. The colony is held while the screen is open.
 
-**Skill checks** use one function, `check(crew, skill, difficulty, &mut rng) -> Outcome`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place.
+**Skill checks** use one function, `check(crew, &CheckDef, &CheckTuning, &mut rng) -> Roll`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place. A `CheckDef` names a `Skill`, a difficulty and specialist bonuses by `CrewId`; `CheckTuning` (`content/hazards.ron`) holds the formula's numbers. The Flight-side member with the best `skill * skill_weight + bonus` rolls (ties go to roster order): score = that + a die roll from 1 to `die_sides`. Score at or above the difficulty is a Success, within `partial_band` below it a Partial, lower a Fail. The `Roll` records who rolled, the die, score and outcome for the transit log.
+
+**The Slip (milestone 5).** *The Mullein* (`content/mullein.ron`, kept in the save as `World.ship` like the colony's module definitions) has a 1,000 L tank, burns 350 L per leg and 150 L per Overclock Burn, all in whole liters; she carries a few ECM pods and a fixed outbound manifest of raw-silicon ore crates, each with a mass (kg) and an integrity percent. `World.credits` is an integer balance that starts from the same file; a ransom spends it, and milestone 6's haggle builds on it.
+
+- *Launch.* `World::launch(universe)` needs the ship on the pad, a confirmed Split with at least one Flight member, and fuel for the leg. It burns the leg's fuel, draws a seed from `World.rng`, asks the universe for a `LaunchBriefing` (`Universe::on_launch`) and starts a `Voyage`, which keeps a copy of the hazard content it launched with so a save resolves the same.
+- *Transit.* `World::advance_voyage` moves one Sol at a time. The briefing schedules Slip events on Sols of the leg; when one comes up its hazard is pending and the voyage won't advance until `World::resolve_hazard(option)` settles it.
+- *The interdiction* (`content/hazards.ron`) has five options: the countermeasure (Piloting check, spends an ECM pod, unavailable with none left), the Overclock Burn (Engineering check, burns 150 L; failure is engine drift, a severe delay), and the concession split three ways: dump cargo (certain, costs crates), pay the ransom (certain, costs credits, unavailable with too few) and bluff (Negotiation check). Each option has a cost paid up front and a `Toll` for Partial (escape with a minor cost: cargo integrity or a minor delay) and Fail.
+- *Delays.* Minor hazard delays draw +5 to +7 Sols and severe drift +7 to +10. Random delays are capped at +12 Sols per round trip: the voyage keeps a running total so milestone 6's return leg respects the same cap. Player-caused delays (audits, from milestone 6) are uncapped.
+- *The colony while away.* While the voyage is in transit `World::tick` holds the colony, so nothing runs twice. On arrival the colony catches up: it ticks through every Sol the voyage used, Standing Orders and Ground-crew stress included, and `advance_voyage` returns those events apart from the voyage's own so the base log can summarize them.
+- *Holding.* Milestone 5 ends outbound. On arrival the ship holds over Scrap Barge 77 with the flight crew aboard, the colony runs normally with the Ground crew, and there is no relaunch until milestone 6 adds docking, the haggle and the return leg.
+
+Events: `Launched`, `SlipSolPassed`, `HazardEncountered`, `HazardResolved` (the option, the `Roll` if any, and what it cost after the cap) and `Arrived`.
 
 ## Presentation layering plan
 
@@ -218,18 +235,19 @@ Each player owns a private colony that runs locally; stations, markets, reputati
 | Voyage state while in The Slip | Constrained player messages left at stations |
 | | Universe clock |
 
-**The interface.** All game code reaches the universe through one trait:
+**The interface.** All game code reaches the universe through one trait. Milestone 5 builds only `on_launch` (in `nexa-sim/src/universe.rs`; `LaunchContext` and `LaunchBriefing` are `nexa-types` structs). The other methods are added when the systems behind them exist: `on_dock` and `submit_trade` with Scrap Barge 77 (milestone 6), `post` with distress calls and Echoes.
 
 ```rust
 pub trait Universe {
-    fn on_launch(&mut self, ctx: &LaunchContext) -> LaunchBriefing;      // pending echoes, slip events
+    fn on_launch(&mut self, ctx: &LaunchContext) -> LaunchBriefing;      // pending echoes, slip events (built)
+    // planned:
     fn on_dock(&mut self, station: StationId, report: &VoyageReport) -> DockState; // prices, reputation, posts
     fn submit_trade(&mut self, trade: &Trade) -> Result<TradeReceipt, TradeError>;
     fn post(&mut self, post: &UniversePost) -> Result<PostId, PostError>; // distress, message, echo seed
 }
 ```
 
-- `OfflineUniverse` (built now): simulated NPC traffic, prices and Echoes, seeded and deterministic. This is the single-player game.
+- `OfflineUniverse` (built now): seeded and deterministic from the `LaunchContext` seed, which the world draws from its own `SimRng`. For now its briefing schedules one Slip hazard (the pirate interdiction) on a Sol of the outbound leg; simulated NPC traffic, prices and Echoes follow. This is the single-player game.
 - `OnlineUniverse` (later): same trait, talks to `nexa-server` over HTTPS. Falls back to cached state if offline, which The Slip's radio silence explains in the fiction.
 
 **Sync points.** Launch fetches a briefing (pending Echoes, posted distress calls on the route). Docking uploads the voyage report and trades, and downloads current station state. Nothing syncs mid-flight. No real-time networking is needed.
@@ -265,6 +283,7 @@ All content is RON (Rusty Object Notation) loaded through `serde`, validated at 
 | --- | --- |
 | `content/machines.ron` | Machine kinds, nominal bands, failure modes, required parts |
 | `content/parts.ron` | Wear parts, mass, base value |
+| `content/mullein.ron` | *The Mullein*: tank, per-leg and Overclock burns, ECM pods, route and transit Sols, outbound ore-crate manifest, starting credits |
 | `content/crew.ron` | The six crew: skills, traits, adult flag, bunk hab; pilot minimum, stress and morale rates and thresholds |
 | `content/hazards.ron` | Slip hazard events, options, checks, outcomes, delay ranges |
 | `content/stations/scrap_barge_77.ron` | Vendors, stock, patience, dialogue, the prospector dilemma |
@@ -274,9 +293,9 @@ All content is RON (Rusty Object Notation) loaded through `serde`, validated at 
 | `assets/manifest.ron` | Asset ID → fallback chain |
 | `audio/cues.ron` | Event → sound cue |
 
-**Saves.** A save is the serialized `World` plus `SimRng` state, written through the `Storage` trait. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
+**Saves.** A save is the serialized `World`, `SimRng` state included, written through the `Storage` trait. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
 
-A save also keeps the content it was made with: each module's `ModuleDef` and the Standing Orders tuning (terminal memory, re-arm margins). So a save replays the same after a balance change, and edits to `content/` reach only new games. `format_version` and `migrate()` aren't built yet; when they are, `migrate()` is where a deliberate rebalance reaches old saves.
+A save also keeps the content it was made with: each module's `ModuleDef` and the Standing Orders tuning (terminal memory, re-arm margins). So a save replays the same after a balance change, and edits to `content/` reach only new games. The ship's definition and a voyage's hazard content are kept the same way. Saves from before milestone 5 get a fixed default RNG seed, the shipped *Mullein* on the pad and the shipped starting credits. `format_version` and `migrate()` aren't built yet; when they are, `migrate()` is where a deliberate rebalance reaches old saves.
 
 **Validation.** A `nexa-sim` test loads every content file and checks cross-references (a machine's required part exists, every hazard option has a valid check). Broken content fails the build, not the playtest.
 
@@ -308,8 +327,8 @@ Milestones are ordered, not dated; each ends with something playable or testable
 2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
 3. **Standing Orders.** *(Done.)* Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
 4. **Crew and the Split.** *(Done.)* Six crew from data, assignments, stress and morale, the Split screen with its two rules.
-5. **The Slip.** Voyage, fuel ledger, cargo integrity, one pirate interdiction with three resolutions via skill checks (the `check` function and the sim's seeded RNG land here, moved from milestone 4). `OfflineUniverse` introduced here.
-6. **Scrap Barge 77.** Haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
+5. **The Slip.** Launch, the outbound leg, fuel ledger, cargo integrity, credits, one pirate interdiction resolved by skill checks or a concession (the `check` function and the sim's seeded RNG land here, moved from milestone 4), arrival over Scrap Barge 77 as a holding state, and the colony catching up on the Sols the voyage used. `OfflineUniverse` introduced here with `on_launch` only.
+6. **Scrap Barge 77.** Docking, haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg (respecting the round trip's random-delay cap), landing, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
 7. **Layer 1.** CRT shader, synthesized sound effects and ambience.
 8. **Layer 2.** Vector panels for cockpit, haggle and Black Box; code-drawn isometric tiles.
 9. **Web build.** WASM port, browser storage, playable link for testers.
