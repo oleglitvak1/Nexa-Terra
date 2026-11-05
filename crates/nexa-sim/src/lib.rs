@@ -11,6 +11,7 @@ use crew::{Assignment, Crew, CrewError, Roster, SplitError, StressLevel};
 use machines::MachineState;
 use nexa_types::{Command, CrewId, ModuleId, Tick, TICKS_PER_SOL};
 use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
+use rng::SimRng;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +21,7 @@ pub mod grid;
 pub mod machines;
 pub mod orders;
 pub mod parts;
+pub mod rng;
 
 /// The whole state of one player's game. Grows milestone by milestone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +34,8 @@ pub struct World {
     pub orders: Orders,
     /// Change the Split through [`World::confirm_split`] so it's checked.
     pub crew: Crew,
+    /// Every random roll the sim makes draws from here.
+    pub rng: SimRng,
 }
 
 /// Unchecked wire form of [`World`]; serde checks it via `TryFrom`.
@@ -45,6 +49,9 @@ struct RawWorld {
     /// Saves from before crew have none.
     #[serde(default, deserialize_with = "present")]
     crew: Option<Crew>,
+    /// Saves from before the RNG start from the fixed default seed.
+    #[serde(default)]
+    rng: SimRng,
 }
 
 /// Reads a field that `World` writes bare, not as an RON `Some(..)`.
@@ -95,6 +102,7 @@ impl TryFrom<RawWorld> for World {
             colony,
             orders: raw.orders,
             crew,
+            rng: raw.rng,
         })
     }
 }
@@ -131,6 +139,7 @@ impl World {
             colony,
             orders: Orders::default(),
             crew: Crew::new(roster),
+            rng: SimRng::default(),
         }
     }
 
@@ -141,6 +150,14 @@ impl World {
         let colony = Colony::from_ron(LANDING_ASH_PLAIN).expect("landing site content is valid");
         let roster = Roster::shipped(&colony).expect("crew content is valid");
         Self::new(colony, roster)
+    }
+
+    /// Landfall with its own seed, so each new game rolls differently.
+    pub fn landfall_seeded(seed: u64) -> Self {
+        Self {
+            rng: SimRng::new(seed),
+            ..Self::landfall()
+        }
     }
 
     /// Advance the simulation by one fixed step (one planetary hour).
@@ -412,6 +429,50 @@ mod tests {
         let stripped = old.replace("kind:Hab,", "").replace("kind:Utility,", "");
         assert!(!stripped.contains("kind:"), "kind format changed: {old}");
         stripped
+    }
+
+    #[test]
+    fn the_rng_survives_a_save_mid_sequence() {
+        let mut world = World::landfall_seeded(99);
+        world.rng.next_u64();
+        let mut loaded: World = ron::from_str(&ron::to_string(&world).unwrap()).unwrap();
+        assert_eq!(loaded, world);
+        assert_eq!(loaded.rng.next_u64(), world.rng.next_u64());
+    }
+
+    #[test]
+    fn seeds_change_only_the_rng() {
+        let mut a = World::landfall_seeded(1);
+        let b = World::landfall_seeded(2);
+        assert_ne!(a, b);
+        a.rng = b.rng.clone();
+        assert_eq!(a, b);
+        assert_eq!(
+            World::landfall_seeded(SimRng::DEFAULT_SEED),
+            World::landfall()
+        );
+    }
+
+    #[test]
+    fn saves_from_before_the_rng_get_the_default_seed() {
+        #[derive(Serialize)]
+        struct OldWorld<'a> {
+            now: Tick,
+            colony: &'a Colony,
+            orders: &'a Orders,
+            crew: &'a Crew,
+        }
+        let world = World::landfall_seeded(5);
+        let old = ron::to_string(&OldWorld {
+            now: world.now,
+            colony: &world.colony,
+            orders: &world.orders,
+            crew: &world.crew,
+        })
+        .unwrap();
+        let loaded: World = ron::from_str(&old).unwrap();
+        assert_eq!(loaded.rng, SimRng::default());
+        assert_eq!(loaded, World::landfall());
     }
 
     #[test]
