@@ -1,7 +1,7 @@
 //! `--script FILE`: play a playthrough script headless and log what happened.
 
 use crate::log_event;
-use nexa_sim::script::{self, RunError, Step};
+use nexa_sim::script::{self, Step};
 use nexa_sim::universe::OfflineUniverse;
 use nexa_sim::{SimEvent, World};
 use nexa_types::{Tick, TICKS_PER_SOL};
@@ -51,10 +51,7 @@ fn run(world: &mut World, lines: &[script::Line]) -> i32 {
             }
             Err(e) => {
                 println!("[SCRIPT] {:>3}: {e}", line.number);
-                return match e {
-                    RunError::NotBuilt(_) => 2,
-                    _ => 1,
-                };
+                return e.exit_code();
             }
         }
     }

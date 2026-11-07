@@ -113,8 +113,13 @@ impl Driver {
                 if let Some(no) = self.need(on, On::Colony, "split") {
                     return no;
                 }
-                self.queue.extend(split_keys(world, flight));
-                Act::Idle
+                match split_keys(world, flight) {
+                    Ok(keys) => {
+                        self.queue.extend(keys);
+                        Act::Idle
+                    }
+                    Err(e) => self.fail(e),
+                }
             }
             Step::Launch => {
                 if let Some(no) = self.need(on, On::Colony, "launch") {
@@ -205,7 +210,15 @@ fn settled(world: &World) -> usize {
 
 /// Open the crew screen, flip whoever is on the wrong side, confirm, and check
 /// the sim took it. The screen stays open for a screenshot; `close` leaves it.
-fn split_keys(world: &World, flight: &[CrewId]) -> Vec<Act> {
+/// An ID not on the roster is refused, as the sim would refuse it.
+fn split_keys(world: &World, flight: &[CrewId]) -> Result<Vec<Act>, String> {
+    let roster = world.crew.members();
+    if let Some(unknown) = flight
+        .iter()
+        .find(|id| !roster.iter().any(|c| &c.id == *id))
+    {
+        return Err(format!("no crew member {unknown}"));
+    }
     let mut acts = vec![Act::Key(KeyCode::C)];
     for c in world.crew.members() {
         let want = if flight.contains(&c.id) {
@@ -230,7 +243,7 @@ fn split_keys(world: &World, flight: &[CrewId]) -> Vec<Act> {
             side.into(),
         ))));
     }
-    acts
+    Ok(acts)
 }
 
 /// Move the option cursor (back at the top for each new hazard) and pick.
@@ -284,7 +297,9 @@ impl Moments {
         let changed = [
             flight != self.flight,
             launched && !self.launched,
-            pending && !self.pending,
+            // A hazard due on the same Sol turns pending as the last is
+            // settled, so `pending` alone may never drop between them.
+            pending && (!self.pending || settled > self.settled),
             settled > self.settled,
             holding && !self.holding,
         ];
@@ -333,7 +348,7 @@ mod tests {
     #[test]
     fn a_split_is_keyed_in_on_the_crew_screen_and_checked() {
         let world = World::landfall();
-        let acts = split_keys(&world, &[CrewId::new("cal")]);
+        let acts = split_keys(&world, &[CrewId::new("cal")]).unwrap();
         assert_eq!(acts[0], Act::Key(KeyCode::C));
         // Roster order: jonathan, elena, maya, cal, ...; only Cal flips.
         let spaces = acts
@@ -346,6 +361,15 @@ mod tests {
             CrewId::new("cal"),
             "flight".into()
         )))));
+    }
+
+    #[test]
+    fn a_split_naming_someone_off_the_roster_fails() {
+        let mut d = Driver::new(parse("split cal,jonathon").unwrap());
+        match d.act(On::Colony, &World::landfall()) {
+            Act::Fail(why, 1) => assert!(why.contains("jonathon"), "{why}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -364,6 +388,36 @@ mod tests {
             d.act(On::Colony, &World::landfall()),
             Act::Fail(_, 2)
         ));
+    }
+
+    struct TwoOnSolOne;
+
+    impl nexa_sim::universe::Universe for TwoOnSolOne {
+        fn on_launch(&mut self, _: &nexa_types::LaunchContext) -> nexa_types::LaunchBriefing {
+            let event = nexa_types::SlipEvent {
+                sol: 1,
+                hazard: nexa_types::HazardId::new("pirate_interdiction"),
+            };
+            nexa_types::LaunchBriefing {
+                events: vec![event.clone(), event],
+            }
+        }
+    }
+
+    #[test]
+    fn a_hazard_straight_after_another_is_its_own_moment() {
+        let mut world = World::landfall_seeded(7);
+        let flight = ["cal", "jonathan", "dax"].map(CrewId::new);
+        world
+            .confirm_split(&nexa_sim::script::assignments(&flight))
+            .unwrap();
+        world.launch(&mut TwoOnSolOne).unwrap();
+        let mut m = Moments::new(vec![ShotAt::Event("hazard".into())], &world);
+        world.advance_voyage().unwrap();
+        assert_eq!(m.check(&world), vec!["hazard"]);
+        world.resolve_hazard("pay").unwrap();
+        assert!(world.voyage.as_ref().unwrap().pending().is_some());
+        assert_eq!(m.check(&world), vec!["hazard"]);
     }
 
     #[test]

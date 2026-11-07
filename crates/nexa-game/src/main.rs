@@ -97,9 +97,13 @@ struct App {
 
 impl App {
     fn new(seed: Option<u64>) -> Self {
+        Self::with(World::landfall(), seed)
+    }
+
+    fn with(world: World, seed: Option<u64>) -> Self {
         Self {
             term: Terminal::new(COLS, ROWS),
-            world: World::landfall(),
+            world,
             universe: OfflineUniverse::default(),
             screen: Screen::Boot {
                 started: get_time(),
@@ -114,10 +118,9 @@ impl App {
     /// Straight to the colony screen with a script's world.
     fn scripted(world: World) -> Self {
         Self {
-            world,
             screen: Screen::Online,
             scripted: true,
-            ..Self::new(None)
+            ..Self::with(world, None)
         }
     }
 
@@ -346,11 +349,13 @@ fn main() {
         Err(e) => {
             eprintln!("nexa-game: {e}");
             eprintln!("usage: nexa-game [--seed N] [--script FILE [--headless | --screenshot-at MOMENT,... --out DIR]]");
-            std::process::exit(64);
+            platform::exit(64);
+            return;
         }
     };
     if opts.headless {
-        std::process::exit(run_headless(&opts));
+        platform::exit(run_headless(&opts));
+        return;
     }
     macroquad::Window::from_config(window_conf(), run(opts));
 }
@@ -390,10 +395,7 @@ fn run_headless(opts: &Options) -> i32 {
             }
             Err(e) => {
                 println!("[SCRIPT] {:>3}: {e}", line.number);
-                return match e {
-                    script::RunError::NotBuilt(_) => 2,
-                    _ => 1,
-                };
+                return e.exit_code();
             }
         }
     }
@@ -422,7 +424,7 @@ async fn run(opts: Options) {
             }
         },
     };
-    std::process::exit(code);
+    platform::exit(code);
 }
 
 /// Play a script through the screens, one action per frame, saving screenshots.
@@ -476,10 +478,10 @@ async fn play(lines: Vec<script::Line>, world: World, opts: &Options) -> i32 {
             names.push("stopped".into());
         }
         app.render();
-        if let Some(dir) = &opts.out {
+        if let (Some(dir), false) = (&opts.out, names.is_empty()) {
+            let image = get_screen_data();
             for name in names {
                 shots += 1;
-                let image = get_screen_data();
                 match platform::save_png(&image, dir, &format!("{shots:02}-{name}")) {
                     Ok(path) => println!("[SHOT] {}", path.display()),
                     Err(e) => eprintln!("[SHOT] {e}"),

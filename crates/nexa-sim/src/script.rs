@@ -107,7 +107,7 @@ impl Expect {
                     ShipLocation::InSlip => "slip",
                     ShipLocation::Holding(_) => "holding",
                 };
-                same("ship", want, have)
+                cmp("ship", want.as_str(), have)
             }
             Expect::Machine(id, want) => {
                 let have = world
@@ -115,11 +115,11 @@ impl Expect {
                     .module(id)
                     .and_then(|m| m.machine())
                     .map_or("none", |m| m.state().label());
-                same(&format!("machine {id}"), want, have)
+                cmp(&format!("machine {id}"), want.as_str(), have)
             }
             Expect::Stress(id, want) => {
                 let have = world.crew.vitals(id).map_or("none", |v| v.level.label());
-                same(&format!("stress {id}"), want, have)
+                cmp(&format!("stress {id}"), want.as_str(), have)
             }
             Expect::Side(id, want) => {
                 let have = match world.crew.assignment(id) {
@@ -127,7 +127,7 @@ impl Expect {
                     Some(Assignment::Ground) => "ground",
                     None => "none",
                 };
-                same(&format!("side {id}"), want, have)
+                cmp(&format!("side {id}"), want.as_str(), have)
             }
         }
     }
@@ -139,10 +139,6 @@ fn cmp<T: PartialEq + std::fmt::Display>(what: &str, want: T, have: T) -> Result
     } else {
         Err(format!("expected {what} {want}, found {have}"))
     }
-}
-
-fn same(what: &str, want: &str, have: &str) -> Result<(), String> {
-    cmp(what, want, have)
 }
 
 /// A step and the 1-based line it came from.
@@ -215,8 +211,8 @@ fn parse_step(words: &[&str]) -> Result<Step, String> {
     match verb {
         "seed" => Ok(Step::Seed(number(&one("number")?)?)),
         "orders" => Ok(Step::Orders(one("preset")?)),
-        "run" => Ok(Step::Run(number(&one("number of Sols")?)?)),
-        "run-to" => Ok(Step::RunTo(number(&one("Sol")?)?)),
+        "run" => Ok(Step::Run(sols(&one("number of Sols")?)?)),
+        "run-to" => Ok(Step::RunTo(sols(&one("Sol")?)?)),
         "split" => {
             let ids: Vec<CrewId> = one("crew list")?
                 .split(',')
@@ -262,6 +258,14 @@ fn number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
         .map_err(|_| format!("{text:?} is not a whole number"))
 }
 
+/// A count of Sols small enough to turn into ticks.
+fn sols(text: &str) -> Result<u64, String> {
+    let n: u64 = number(text)?;
+    n.checked_mul(TICKS_PER_SOL)
+        .map(|_| n)
+        .ok_or_else(|| format!("{n} Sols is too many"))
+}
+
 /// Why a step couldn't run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunError {
@@ -284,6 +288,17 @@ impl std::fmt::Display for RunError {
 }
 
 impl std::error::Error for RunError {}
+
+impl RunError {
+    /// The process exit code for a script that stopped here: 2 for a system
+    /// that isn't built yet, 1 for anything else.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            RunError::NotBuilt(_) => 2,
+            RunError::Refused(_) | RunError::Expectation(_) => 1,
+        }
+    }
+}
 
 /// What one step did. `colony` holds the hours caught up on arrival.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -337,19 +352,25 @@ pub fn run_step(
     step: &Step,
 ) -> Result<Outcome, RunError> {
     let refused = |e: &dyn std::fmt::Display| RunError::Refused(e.to_string());
+    let in_transit = |world: &World| world.voyage.as_ref().is_some_and(|v| v.in_transit());
+    // The colony is held in transit: ticking would pass no time.
+    let colony_held = || RunError::Refused("the colony is held in transit".into());
     let mut out = Outcome::default();
     match step {
         // `start` already used it.
         Step::Seed(_) | Step::Close | Step::Screenshot(_) => {}
         Step::Orders(name) => load_preset(world, name)?,
         Step::Run(sols) => {
+            if in_transit(world) {
+                return Err(colony_held());
+            }
             for _ in 0..sols * TICKS_PER_SOL {
                 out.events.extend(world.tick());
             }
         }
         Step::RunTo(sol) => {
-            if world.voyage.as_ref().is_some_and(|v| v.in_transit()) {
-                return Err(RunError::Refused("the colony is held in transit".into()));
+            if in_transit(world) {
+                return Err(colony_held());
             }
             while world.now.sol() < *sol {
                 out.events.extend(world.tick());
@@ -366,7 +387,10 @@ pub fn run_step(
             out.events = world.resolve_hazard(option).map_err(|e| refused(&e))?;
         }
         Step::Fly(option) => {
-            while world.voyage.as_ref().is_some_and(|v| v.in_transit()) {
+            if !in_transit(world) {
+                return Err(RunError::Refused("no voyage in transit to fly".into()));
+            }
+            while in_transit(world) {
                 if world.voyage.as_ref().is_some_and(|v| v.pending().is_some()) {
                     out.events
                         .extend(world.resolve_hazard(option).map_err(|e| refused(&e))?);
@@ -447,5 +471,23 @@ mod tests {
         assert!(matches!(r, Err((1, RunError::Refused(_)))));
         let (_, r) = run_all("land");
         assert!(matches!(r, Err((1, RunError::NotBuilt(_)))));
+    }
+
+    #[test]
+    fn steps_that_would_do_nothing_are_refused() {
+        let (_, r) = run_all("fly pay");
+        assert!(matches!(r, Err((1, RunError::Refused(_)))));
+        let (_, r) = run_all("seed 7\nsplit cal,jonathan,dax\nlaunch\nrun 1");
+        assert!(matches!(r, Err((4, RunError::Refused(_)))));
+        let (_, r) = run_all("seed 7\nsplit cal,jonathan,dax\nlaunch\nfly pay\nfly pay");
+        assert!(matches!(r, Err((5, RunError::Refused(_)))));
+        let (_, r) = run_all("split cal,jonathon,dax");
+        assert!(matches!(r, Err((1, RunError::Refused(_)))));
+    }
+
+    #[test]
+    fn sol_counts_that_overflow_ticks_dont_parse() {
+        assert_eq!(parse("run 1\nrun 800000000000000000").unwrap_err().line, 2);
+        assert!(parse("run-to 18446744073709551615").is_err());
     }
 }

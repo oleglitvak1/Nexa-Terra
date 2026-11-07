@@ -3,6 +3,8 @@
 //! file system. On the web there are no arguments, so every option is off.
 
 use macroquad::prelude::Image;
+#[cfg(test)]
+use macroquad::prelude::BLACK;
 use std::path::{Path, PathBuf};
 
 /// When to save a screenshot during a scripted run, besides `screenshot` steps.
@@ -80,19 +82,43 @@ fn shot_at(text: &str) -> Result<ShotAt, String> {
 
 /// The options this process was started with; on the web, none.
 pub fn options() -> Result<Options, String> {
+    if cfg!(target_arch = "wasm32") {
+        return Ok(Options::default());
+    }
     parse(std::env::args().skip(1))
 }
 
+/// End the process with `code`. The web has no process to end: the page
+/// stays as it is.
+pub fn exit(code: i32) {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::process::exit(code);
+    #[cfg(target_arch = "wasm32")]
+    let _ = code;
+}
+
 pub fn read_text(path: &str) -> Result<String, String> {
+    if cfg!(target_arch = "wasm32") {
+        return Err(format!("can't read {path}: no files on the web"));
+    }
     std::fs::read_to_string(path).map_err(|e| format!("can't read {path}: {e}"))
 }
 
 /// Save `image` as `dir/name.png`, creating `dir`; returns the path.
 pub fn save_png(image: &Image, dir: &Path, name: &str) -> Result<PathBuf, String> {
+    if cfg!(target_arch = "wasm32") {
+        return Err("no files on the web".into());
+    }
     std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     let path = dir.join(format!("{name}.png"));
+    // `export_png` panics on a failed write, so open the file first to turn
+    // the usual failures (permissions, a directory in the way) into errors.
+    std::fs::File::create(&path).map_err(|e| format!("can't write {}: {e}", path.display()))?;
     image.export_png(&path.to_string_lossy());
-    Ok(path)
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() > 0 => Ok(path),
+        _ => Err(format!("nothing written to {}", path.display())),
+    }
 }
 
 #[cfg(test)]
@@ -130,5 +156,15 @@ mod tests {
         assert!(args("--script a --screenshot-at docked --out d").is_err());
         assert!(args("--out d").is_err());
         assert!(args("--fast").is_err());
+    }
+
+    #[test]
+    fn a_screenshot_that_cant_be_written_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("nexa-shot-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("taken.png")).unwrap();
+        let image = Image::gen_image_color(2, 2, BLACK);
+        assert!(save_png(&image, &dir, "taken").is_err());
+        assert!(save_png(&image, &dir, "fresh").is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
