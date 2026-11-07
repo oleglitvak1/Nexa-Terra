@@ -1,0 +1,30 @@
+# (b) Worst-case random bad luck that still survives.
+# Outbound has one hazard, so the worst it can do alone is a severe drift
+# (+10); the round-trip cap is +12, so the return leg can add at most 2 more.
+# Worst random landing: Sol 35, ten Sols inside the Sol-45 deadline.
+seed 7                          # the overclock fails: severe drift +10
+orders caretaker
+run-to 10
+split cal,jonathan,dax
+close
+launch
+fly overclock
+screenshot holding
+expect sol 25
+expect fuel 500
+expect delay 10
+expect random-delay 10
+expect machine hab_01 nominal
+expect machine hab_02 nominal
+expect stress maya calm
+close
+screenshot colony-after-catchup
+# Milestone 6 from here.
+dock
+haggle carbon-filters
+return                          # at most +2 more random Sols
+land
+expect sol 35
+screenshot blackbox
+install-filters
+screenshot rain

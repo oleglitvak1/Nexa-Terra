@@ -21,6 +21,9 @@ cargo run -p nexa-tools -- 10 --orders caretaker   # ... under a Standing Orders
 cargo run -p nexa-tools -- 10 --split cal,oron     # ... with a confirmed Split
 cargo run -p nexa-tools -- --launch --seed 7 --resolve overclock   # fly The Slip, print a voyage report
 cargo run -p nexa-tools -- --sweep 1000            # outcome rates per hazard option, for tuning
+cargo run -p nexa-tools -- --script scripts/playthrough/a_nominal.nts   # play a script headless (scripts/README.md)
+cargo run -- --seed 7                               # play with a fixed RNG seed
+cargo run -- --script FILE --screenshot-at hazard,sol:12 --out shots    # scripted run through the real screens + PNGs
 cargo test --workspace                      # all tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all

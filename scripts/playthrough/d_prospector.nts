@@ -1,0 +1,26 @@
+# (d) Prospector gift, then a return interdiction solved without a burn.
+# Keep the tank full outbound by dumping cargo; at the station give 200 L:
+# 650 - 200 = 450, the return leg burns 350, leaving 100 L at the return
+# interdiction: enough to land, not enough for a 150 L Overclock Burn.
+seed 4
+orders caretaker
+run-to 10
+split cal,jonathan,dax
+close
+launch
+fly dump
+expect fuel 650
+expect crates 7
+expect delay 0
+close
+# Milestone 6 from here.
+dock
+haggle carbon-filters
+give-fuel 200
+expect fuel 450
+return
+screenshot return-hazard        # overclock must show as unavailable
+resolve bluff
+land
+expect fuel 100
+screenshot blackbox

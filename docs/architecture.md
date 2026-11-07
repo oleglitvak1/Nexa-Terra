@@ -311,6 +311,7 @@ Because the sim is pure and deterministic, most of the game can be tested withou
 - **Scenario tests**: load a content file, apply a scripted command list, assert on the resulting `World` (e.g. "heater off for 3 Sols freezes the seal").
 - **Snapshot tests** (`insta`): the Black Box log for a fixed seed must match a stored snapshot. Any balance change shows up as a readable diff.
 - **Headless balance runs**: a `nexa-tools` binary plays thousands of seeded voyages with scripted strategies and reports survival rates and margin against the 45-Sol deadline.
+- **Playthrough scripts** (`scripts/`, run by `nexa_sim::script`): line-based player actions and `expect` checks. `nexa-tools --script` plays one headless; `nexa-game --script` plays it through the real screens with key presses and `--screenshot-at MOMENT,... --out DIR` saves PNGs; `--headless` runs it without a window. `--seed N` fixes the game's RNG. `crates/nexa-sim/tests/gdd_invariants.rs` checks the GDD's numbers; rules for unbuilt systems are ignored tests that record the expected values.
 - **Property tests** (`proptest`) on orders and the economy: no command sequence produces negative cargo or fuel, or creates credits from nothing.
 
 **Working with AI**
