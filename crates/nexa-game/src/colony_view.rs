@@ -72,6 +72,24 @@ pub fn log_line(at: Tick, event: &SimEvent) -> String {
             crew.as_str().to_uppercase(),
             level.label().to_uppercase()
         ),
+        SimEvent::Launched { flight, .. } => {
+            format!("{at} MULLEIN LAUNCHED, {} ABOARD", flight.len())
+        }
+        SimEvent::SlipSolPassed { sol, of } => format!("SLIP SOL {sol}/{of}"),
+        SimEvent::HazardEncountered { hazard } => {
+            format!("{at} HAZARD {}", hazard.as_str().to_uppercase())
+        }
+        SimEvent::HazardResolved(r) => format!(
+            "{at} {} {}",
+            r.option.to_uppercase(),
+            r.outcome.label().to_uppercase()
+        ),
+        SimEvent::Arrived {
+            destination, sols, ..
+        } => format!(
+            "{at} HOLDING AT {}, {sols} SOLS",
+            destination.as_str().to_uppercase()
+        ),
     }
 }
 
@@ -277,6 +295,37 @@ mod tests {
             level: nexa_sim::crew::StressLevel::Breaking,
         };
         assert_eq!(log_line(Tick(30), &event), "S001 H04 JONATHAN BREAKING");
+    }
+
+    #[test]
+    fn voyage_log_lines_fit_the_panel() {
+        use nexa_types::{CrewId, HazardId, StationId};
+        let events = [
+            SimEvent::Launched {
+                destination: StationId::new("barge_77"),
+                flight: ["cal", "dax"].map(CrewId::new).to_vec(),
+                fuel_burned_l: 350,
+            },
+            SimEvent::HazardEncountered {
+                hazard: HazardId::new("pirate_interdiction"),
+            },
+            SimEvent::Arrived {
+                destination: StationId::new("barge_77"),
+                sols: 17,
+                delay_sols: 12,
+            },
+        ];
+        let lines: Vec<String> = events.iter().map(|e| log_line(Tick(130), e)).collect();
+        assert_eq!(
+            lines,
+            [
+                "S005 H00 MULLEIN LAUNCHED, 2 ABOARD",
+                "S005 H00 HAZARD PIRATE_INTERDICTION",
+                "S005 H00 HOLDING AT BARGE_77, 17 SOLS",
+            ]
+        );
+        // The log panel is 42 columns, the last one margin.
+        assert!(lines.iter().all(|l| l.len() <= 41), "{lines:?}");
     }
 
     #[test]

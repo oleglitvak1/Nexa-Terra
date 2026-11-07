@@ -1,0 +1,75 @@
+// Nexa Terra: Slip hazards, their options, and the skill-check formula.
+//
+// A check: the Flight-side member with the best skill * skill_weight + bonus
+// rolls 1..=die_sides on top. At or above the difficulty: Success. Within
+// partial_band below it: Partial. Lower: Fail. Specialist bonuses count only
+// while that crew member flies (docs/architecture.md, "Skill checks").
+//
+// Every option has a `cost` paid up front (an option the ship can't pay is
+// unavailable), and an optional check. Success costs nothing more; `partial`
+// and `fail` are what a Partial or a Fail adds. Tolls:
+//   overclock_burns: Overclock Burns at the ship's burn (content/mullein.ron)
+//   pods: ECM pods spent          credits: whole credits paid
+//   dump_crates: crates jettisoned from the hold
+//   cargo_damage_pct: integrity points every crate loses
+//   delay: Some(Minor) or Some(Severe), drawn from the ranges below
+(
+    // Tuned with `nexa-tools --sweep`: a rated-5 specialist aboard (5 * 3 + 3 =
+    // 18) against difficulty 29 succeeds on 11+ (50%), is partial on 5..=10
+    // (30%) and fails on 1..=4 (20%). Without the specialist the same member
+    // needs 14+ to succeed (35%); a crew member rated 0 can't pass a 29 at all.
+    checks: (
+        skill_weight: 3,
+        die_sides: 20,
+        partial_band: 6,
+    ),
+    // Random hazard delays, in Sols (docs/game-design.md 4.B). The cap covers a
+    // whole round trip; player-caused delays are not counted against it.
+    delays: (
+        minor_sols: (5, 7),
+        severe_sols: (7, 10),
+        random_cap_sols: 12,
+    ),
+    hazards: [
+        (
+            id: "pirate_interdiction",
+            name: "Pirate interdiction",
+            text: "A raider drops out of the Slip wake and paints The Mullein with a targeting lock. The comm crackles: cut your burn and open the hold.",
+            options: [
+                (
+                    id: "ecm",
+                    label: "Deploy an ECM pod and break the lock",
+                    cost: (pods: 1),
+                    check: Some((skill: Piloting, difficulty: 29, specialists: { "cal": 3 })),
+                    partial: (delay: Some(Minor)),
+                    fail: (cargo_damage_pct: 20, delay: Some(Minor)),
+                ),
+                (
+                    id: "overclock",
+                    label: "Overclock Burn: outrun the vector",
+                    cost: (overclock_burns: 1),
+                    check: Some((skill: Engineering, difficulty: 29, specialists: { "jonathan": 3 })),
+                    partial: (cargo_damage_pct: 10),
+                    fail: (delay: Some(Severe)),
+                ),
+                (
+                    id: "dump",
+                    label: "Dump cargo and let them chase it",
+                    cost: (dump_crates: 3),
+                ),
+                (
+                    id: "pay",
+                    label: "Pay the ransom",
+                    cost: (credits: 300),
+                ),
+                (
+                    id: "bluff",
+                    label: "Bluff with false transponder codes",
+                    check: Some((skill: Negotiation, difficulty: 29, specialists: { "dax": 3 })),
+                    partial: (delay: Some(Minor)),
+                    fail: (dump_crates: 4, cargo_damage_pct: 10),
+                ),
+            ],
+        ),
+    ],
+)

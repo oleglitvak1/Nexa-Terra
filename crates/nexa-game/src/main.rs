@@ -3,22 +3,27 @@
 //! An amber terminal that boots, waits for a key, then shows the colony map
 //! and its status, with the simulation running in real time with pause. The
 //! Caretaker terminal edits Standing Orders and the crew screen sets the Split,
-//! both while the colony is held.
+//! both while the colony is held. `[L]` launches The Mullein into The Slip:
+//! the voyage screen flies her Sol by Sol to Scrap Barge 77, and the colony
+//! catches up on arrival.
 
 mod colony_view;
 mod crew_view;
 mod orders_view;
 mod terminal;
 mod ui;
+mod voyage_view;
 
 use crew_view::CrewScreen;
 use macroquad::prelude::*;
+use nexa_sim::universe::OfflineUniverse;
 use nexa_sim::{SimEvent, World};
 use nexa_types::Tick;
 use orders_view::OrdersEditor;
 use std::collections::VecDeque;
 use terminal::{Ink, Terminal};
 use ui::Outcome;
+use voyage_view::VoyageScreen;
 
 const COLS: usize = 80;
 /// Tall enough for the 32-row map plus a header and key-help row inside the frame.
@@ -61,11 +66,15 @@ enum Screen {
     Orders(OrdersEditor),
     /// Held too: the Split is set between hours.
     Crew(CrewScreen),
+    /// In The Slip the colony is held by the sim until arrival.
+    Voyage(VoyageScreen),
 }
 
 struct App {
     term: Terminal,
     world: World,
+    /// Everything off-colony; offline until the shared universe exists.
+    universe: OfflineUniverse,
     screen: Screen,
     paused: bool,
     speed: u32,
@@ -78,6 +87,7 @@ impl App {
         Self {
             term: Terminal::new(COLS, ROWS),
             world: World::landfall(),
+            universe: OfflineUniverse::default(),
             screen: Screen::Boot {
                 started: get_time(),
             },
@@ -99,6 +109,9 @@ impl App {
                 // Any key press after boot starts the terminal. This first key
                 // press is also what browsers require before audio may play.
                 if boot_done && key.is_some() {
+                    // Seed from how long the player took to boot, so each game
+                    // rolls differently; the sim itself never reads the clock.
+                    self.world = World::landfall_seeded(get_time().to_bits());
                     self.screen = Screen::Online;
                 }
             }
@@ -107,6 +120,7 @@ impl App {
                     Some(KeyCode::Escape) => return false,
                     Some(KeyCode::O) => self.screen = Screen::Orders(OrdersEditor::new()),
                     Some(KeyCode::C) => self.screen = Screen::Crew(CrewScreen::new(&self.world)),
+                    Some(KeyCode::L) => self.launch(),
                     Some(KeyCode::Space) => self.paused = !self.paused,
                     Some(KeyCode::Key1) => self.speed = 1,
                     Some(KeyCode::Key2) => self.speed = 2,
@@ -130,6 +144,17 @@ impl App {
                     }
                 }
             }
+            Screen::Voyage(screen) => {
+                if let Some(key) = key {
+                    let outcome = screen.handle(key, &mut self.world);
+                    for line in screen.take_base_log() {
+                        self.push_log(line);
+                    }
+                    if outcome == Outcome::Close {
+                        self.screen = Screen::Online;
+                    }
+                }
+            }
             Screen::Crew(screen) => {
                 if let Some(key) = key {
                     let mut events = Vec::new();
@@ -145,12 +170,31 @@ impl App {
         true
     }
 
+    /// Launch, or say in the base log why not.
+    fn launch(&mut self) {
+        let at = self.world.now;
+        match self.world.launch(&mut self.universe) {
+            Ok(events) => {
+                self.log_events(at, &events);
+                self.screen = Screen::Voyage(VoyageScreen::new(&self.world, &events));
+            }
+            Err(e) => self.push_log(format!(
+                "{at} LAUNCH REFUSED: {}",
+                voyage_view::launch_refusal(&e)
+            )),
+        }
+    }
+
+    fn push_log(&mut self, line: String) {
+        if self.log.len() == LOG_CAPACITY {
+            self.log.pop_front();
+        }
+        self.log.push_back(line);
+    }
+
     fn log_events(&mut self, at: Tick, events: &[SimEvent]) {
         for event in events {
-            if self.log.len() == LOG_CAPACITY {
-                self.log.pop_front();
-            }
-            self.log.push_back(colony_view::log_line(at, event));
+            self.push_log(colony_view::log_line(at, event));
         }
     }
 
@@ -193,7 +237,7 @@ impl App {
                 t.put_str(
                     MARGIN,
                     HELP_ROW,
-                    "[SPACE] PAUSE   [1-3] SPEED   [O] ORDERS   [C] CREW   [ESC] SHUT DOWN",
+                    "[SPACE] PAUSE  [1-3] SPEED  [O] ORDERS  [C] CREW  [L] LAUNCH  [ESC] QUIT",
                     Ink::Dim,
                 );
             }
@@ -201,6 +245,15 @@ impl App {
                 let title = "MULLEIN SYSTEMS // CARETAKER TERMINAL";
                 draw_title(t, title, self.world.now, "HELD");
                 editor.draw(t, &self.world, HELP_ROW);
+            }
+            Screen::Voyage(screen) => {
+                let title = "MULLEIN SYSTEMS // COCKPIT";
+                let status = match self.world.voyage.as_ref() {
+                    Some(v) if v.in_transit() => "IN THE SLIP",
+                    _ => "HOLDING",
+                };
+                draw_title(t, title, self.world.now, status);
+                screen.draw(t, &self.world, HELP_ROW);
             }
             Screen::Crew(screen) => {
                 let title = "MULLEIN SYSTEMS // CREW QUARTERS";

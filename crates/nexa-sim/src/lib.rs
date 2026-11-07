@@ -8,18 +8,27 @@
 
 use colony::{Colony, CommandError, LANDING_ASH_PLAIN};
 use crew::{Assignment, Crew, CrewError, Roster, SplitError, StressLevel};
+use flight::{Resolution, Voyage};
 use machines::MachineState;
-use nexa_types::{Command, CrewId, ModuleId, Tick, TICKS_PER_SOL};
+use nexa_types::{Command, CrewId, HazardId, ModuleId, StationId, Tick, TICKS_PER_SOL};
 use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
+use rng::SimRng;
 use serde::{Deserialize, Serialize};
+use ship::{Ship, ShipDef, ShipError, ShipLocation};
 use std::collections::BTreeMap;
 
+pub mod check;
 pub mod colony;
 pub mod crew;
+pub mod flight;
 pub mod grid;
+pub mod hazards;
 pub mod machines;
 pub mod orders;
 pub mod parts;
+pub mod rng;
+pub mod ship;
+pub mod universe;
 
 /// The whole state of one player's game. Grows milestone by milestone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +41,15 @@ pub struct World {
     pub orders: Orders,
     /// Change the Split through [`World::confirm_split`] so it's checked.
     pub crew: Crew,
+    /// Every random roll the sim makes draws from here.
+    pub rng: SimRng,
+    /// The Mullein; flown through [`World::launch`].
+    pub ship: Ship,
+    /// The colony's purse, in whole credits.
+    pub credits: u32,
+    /// The trip through The Slip, from launch on; driven through
+    /// [`World::advance_voyage`] and [`World::resolve_hazard`].
+    pub voyage: Option<Voyage>,
 }
 
 /// Unchecked wire form of [`World`]; serde checks it via `TryFrom`.
@@ -45,6 +63,18 @@ struct RawWorld {
     /// Saves from before crew have none.
     #[serde(default, deserialize_with = "present")]
     crew: Option<Crew>,
+    /// Saves from before the RNG start from the fixed default seed.
+    #[serde(default)]
+    rng: SimRng,
+    /// Saves from before the ship get the shipped Mullein on the pad...
+    #[serde(default, deserialize_with = "present")]
+    ship: Option<Ship>,
+    /// ... and the shipped starting credits.
+    #[serde(default, deserialize_with = "present")]
+    credits: Option<u32>,
+    /// Saves from before The Slip have no voyage.
+    #[serde(default)]
+    voyage: Option<Voyage>,
 }
 
 /// Reads a field that `World` writes bare, not as an RON `Some(..)`.
@@ -61,6 +91,8 @@ where
 pub enum LoadError {
     Orders(OrderError),
     Crew(CrewError),
+    Ship(ShipError),
+    Voyage(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -68,6 +100,8 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Orders(e) => write!(f, "standing orders: {e}"),
             LoadError::Crew(e) => write!(f, "crew: {e}"),
+            LoadError::Ship(e) => write!(f, "ship: {e}"),
+            LoadError::Voyage(e) => write!(f, "voyage: {e}"),
         }
     }
 }
@@ -90,11 +124,25 @@ impl TryFrom<RawWorld> for World {
             }
         };
         crew.check(&colony).map_err(LoadError::Crew)?;
+        let ship = raw.ship.unwrap_or_default();
+        ship.check().map_err(LoadError::Ship)?;
+        match &raw.voyage {
+            Some(voyage) => voyage.check(&ship, &crew).map_err(LoadError::Voyage)?,
+            None if ship.location() != &ShipLocation::Pad => {
+                return Err(LoadError::Voyage("the ship is away with no voyage".into()))
+            }
+            None => {}
+        }
+        let credits = raw.credits.unwrap_or(ShipDef::shipped().starting_credits);
         Ok(Self {
             now: raw.now,
             colony,
             orders: raw.orders,
             crew,
+            rng: raw.rng,
+            ship,
+            credits,
+            voyage: raw.voyage,
         })
     }
 }
@@ -103,13 +151,18 @@ impl TryFrom<RawWorld> for World {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SimEvent {
     /// A new Sol has begun.
-    SolStarted { sol: u64 },
+    SolStarted {
+        sol: u64,
+    },
     MachineStateChanged {
         module: ModuleId,
         state: MachineState,
     },
     /// A Standing Order's triggers all held; its actions follow as their own events.
-    OrderFired { slot: usize, order: StandingOrder },
+    OrderFired {
+        slot: usize,
+        order: StandingOrder,
+    },
     /// One action of a fired card did nothing.
     OrderActionSkipped {
         slot: usize,
@@ -117,9 +170,36 @@ pub enum SimEvent {
         reason: SkipReason,
     },
     /// A Split passed its rules and is now the crew's assignments.
-    SplitConfirmed { flight: Vec<CrewId> },
+    SplitConfirmed {
+        flight: Vec<CrewId>,
+    },
     /// A crew member's stress reached a new level.
-    CrewStressChanged { crew: CrewId, level: StressLevel },
+    CrewStressChanged {
+        crew: CrewId,
+        level: StressLevel,
+    },
+    /// The Mullein left the pad for The Slip.
+    Launched {
+        destination: StationId,
+        flight: Vec<CrewId>,
+        fuel_burned_l: u32,
+    },
+    /// One Sol of the leg flown, of `of` (which grows with delays).
+    SlipSolPassed {
+        sol: u32,
+        of: u32,
+    },
+    /// A hazard is waiting on a choice.
+    HazardEncountered {
+        hazard: HazardId,
+    },
+    HazardResolved(Resolution),
+    /// The leg is over; the ship holds over the station.
+    Arrived {
+        destination: StationId,
+        sols: u32,
+        delay_sols: u32,
+    },
 }
 
 impl World {
@@ -131,6 +211,10 @@ impl World {
             colony,
             orders: Orders::default(),
             crew: Crew::new(roster),
+            rng: SimRng::default(),
+            ship: Ship::default(),
+            credits: ShipDef::shipped().starting_credits,
+            voyage: None,
         }
     }
 
@@ -143,8 +227,20 @@ impl World {
         Self::new(colony, roster)
     }
 
+    /// Landfall with its own seed, so each new game rolls differently.
+    pub fn landfall_seeded(seed: u64) -> Self {
+        Self {
+            rng: SimRng::new(seed),
+            ..Self::landfall()
+        }
+    }
+
     /// Advance the simulation by one fixed step (one planetary hour).
+    /// Held while a voyage is in transit: arrival catches the colony up.
     pub fn tick(&mut self) -> Vec<SimEvent> {
+        if self.voyage.as_ref().is_some_and(Voyage::in_transit) {
+            return Vec::new();
+        }
         // The Caretaker reads the gauges and acts, then the hour runs.
         let mut events = self.orders.evaluate(&mut self.colony);
         events.extend(self.colony.tick());
@@ -180,11 +276,15 @@ impl World {
     }
 
     /// Decide who flies. Crew left out of `assignments` stay on the Ground; a
-    /// refused Split leaves the current one in place. Launch is milestone 5.
+    /// refused Split leaves the current one in place, and so does any Split
+    /// while the ship is away.
     pub fn confirm_split(
         &mut self,
         assignments: &BTreeMap<CrewId, Assignment>,
     ) -> Result<Vec<SimEvent>, SplitError> {
+        if self.ship.location() != &ShipLocation::Pad {
+            return Err(SplitError::ShipAway);
+        }
         let flight = self.crew.confirm_split(assignments)?;
         Ok(vec![SimEvent::SplitConfirmed { flight }])
     }
@@ -412,6 +512,81 @@ mod tests {
         let stripped = old.replace("kind:Hab,", "").replace("kind:Utility,", "");
         assert!(!stripped.contains("kind:"), "kind format changed: {old}");
         stripped
+    }
+
+    #[test]
+    fn the_rng_survives_a_save_mid_sequence() {
+        let mut world = World::landfall_seeded(99);
+        world.rng.next_u64();
+        let mut loaded: World = ron::from_str(&ron::to_string(&world).unwrap()).unwrap();
+        assert_eq!(loaded, world);
+        assert_eq!(loaded.rng.next_u64(), world.rng.next_u64());
+    }
+
+    #[test]
+    fn seeds_change_only_the_rng() {
+        let mut a = World::landfall_seeded(1);
+        let b = World::landfall_seeded(2);
+        assert_ne!(a, b);
+        a.rng = b.rng.clone();
+        assert_eq!(a, b);
+        assert_eq!(
+            World::landfall_seeded(SimRng::DEFAULT_SEED),
+            World::landfall()
+        );
+    }
+
+    #[test]
+    fn saves_from_before_the_rng_get_the_default_seed() {
+        #[derive(Serialize)]
+        struct OldWorld<'a> {
+            now: Tick,
+            colony: &'a Colony,
+            orders: &'a Orders,
+            crew: &'a Crew,
+        }
+        let world = World::landfall_seeded(5);
+        let old = ron::to_string(&OldWorld {
+            now: world.now,
+            colony: &world.colony,
+            orders: &world.orders,
+            crew: &world.crew,
+        })
+        .unwrap();
+        let loaded: World = ron::from_str(&old).unwrap();
+        assert_eq!(loaded.rng, SimRng::default());
+        assert_eq!(loaded, World::landfall());
+    }
+
+    /// Every shipped content file parses and passes its cross-reference checks.
+    #[test]
+    fn all_shipped_content_loads() {
+        let colony = Colony::from_ron(LANDING_ASH_PLAIN).unwrap();
+        let roster = Roster::shipped(&colony).unwrap();
+        OrdersDef::from_ron(orders::STANDING_ORDERS).unwrap();
+        ShipDef::from_ron(ship::MULLEIN).unwrap();
+        hazards::HazardsDef::from_ron(hazards::HAZARDS, &roster).unwrap();
+    }
+
+    #[test]
+    fn landfall_has_the_mullein_on_the_pad_and_the_starting_purse() {
+        let world = World::landfall();
+        assert_eq!(world.ship.location(), &ship::ShipLocation::Pad);
+        assert_eq!(world.ship.fuel_l(), world.ship.def().tank_l);
+        assert_eq!(world.credits, ShipDef::shipped().starting_credits);
+    }
+
+    #[test]
+    fn a_save_with_a_bad_ship_is_rejected() {
+        let saved = ron::to_string(&World::landfall()).unwrap();
+        let reject = |from: &str, to: &str| {
+            let edited = saved.replacen(from, to, 1);
+            assert_ne!(edited, saved, "{from} not in save");
+            assert!(ron::from_str::<World>(&edited).is_err(), "{from} -> {to}");
+        };
+        reject(",fuel_l:1000", ",fuel_l:1001");
+        reject(",pods:1", ",pods:2");
+        reject("integrity_pct:100", "integrity_pct:101");
     }
 
     #[test]

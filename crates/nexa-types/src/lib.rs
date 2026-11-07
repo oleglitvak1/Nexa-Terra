@@ -82,6 +82,48 @@ impl std::fmt::Display for CrewId {
     }
 }
 
+/// Stable name of an orbital station, as written in content files (e.g. `barge_77`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StationId(pub String);
+
+impl StationId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for StationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Stable name of a Slip hazard, as written in content files (e.g. `pirate_interdiction`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HazardId(pub String);
+
+impl HazardId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HazardId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Something the player (or a Standing Order) asks the colony to do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
@@ -97,6 +139,33 @@ pub enum Command {
     },
     /// Fit a spare part to a failed machine.
     Repair(ModuleId),
+}
+
+/// What the universe is told when a ship launches into The Slip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchContext {
+    pub destination: StationId,
+    /// Colony time at launch.
+    pub departure: Tick,
+    /// Nominal Sols of the leg.
+    pub transit_sols: u32,
+    /// Who flies, in roster order.
+    pub flight_crew: Vec<CrewId>,
+    /// Drawn from the colony's RNG, so an offline universe is deterministic.
+    pub seed: u64,
+}
+
+/// A hazard waiting on the route, `sol` Sols into the leg.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlipEvent {
+    pub sol: u32,
+    pub hazard: HazardId,
+}
+
+/// What the universe answers at launch: what lies on the route.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LaunchBriefing {
+    pub events: Vec<SlipEvent>,
 }
 
 #[cfg(test)]

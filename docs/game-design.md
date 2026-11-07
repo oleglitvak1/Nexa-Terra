@@ -101,6 +101,8 @@ Space flight is represented through a tactile cockpit interface and an emergency
 * *Option 3: Economic Concession / Bluff (Social-Dependent):* Dump raw cargo, pay a credit ransom, or bluff using false transponder codes (Negotiator check).
 
 
+* *Specialists and supplies:* the best qualified member of the flight crew makes each check, and a flight specialist aboard adds a bonus: Cal on the countermeasure, Jonathan on the Overclock Burn, Dax on the bluff. ECM pods are limited: *The Mullein* carries a few and each countermeasure spends one, so with none left the option is gone. A ransom needs the credits to pay it.
+* *Outcomes:* a check succeeds, partly succeeds or fails. A partial escape still costs something small (some cargo integrity or a minor delay); a failure costs more.
 * **Fuel Ledger (Vertical Slice):** *The Mullein* carries a 1,000 L reaction mass tank. A clean round trip burns 700 L (350 L each way), leaving a 300 L reserve. One Overclock Burn costs 150 L. All fuel is tracked in whole liters.
 * **Systemic Failure Impacts:** Encounters do not deal generic hull hit points; they cause cargo seal blowouts, fuel leaks, or transit delays that eat directly into the colony's ground survival buffers. Random hazard delays run +5 to +7 Sols (minor) or +7 to +10 Sols (severe drift), and are capped at **+12 Sols** per round trip so bad luck alone never kills the colony.
 
@@ -154,7 +156,7 @@ PHASE 1: LANDFALL                 PHASE 2: THE SPLIT                PHASE 3: THE
 
 ### Time, Day Budget & Fail State
 
-* **Time model:** The colony runs real-time with pause (1x / 2x / 3x). One Sol is 26 hours; at 1x, one hour passes in 5 seconds (about 2 min 10 s per Sol), so the ~10 Sols of ground prep take roughly 20–22 minutes. The Slip and station phases advance as discrete events, and the colony clock jumps forward by the Sols the voyage used.
+* **Time model:** The colony runs real-time with pause (1x / 2x / 3x). One Sol is 26 hours; at 1x, one hour passes in 5 seconds (about 2 min 10 s per Sol), so the ~10 Sols of ground prep take roughly 20–22 minutes. The Slip and station phases advance as discrete events, and the colony clock jumps forward by the Sols the voyage used. The jump is a real catch-up: the colony runs every hour of those Sols, so the Standing Orders and the Ground crew's stress play out while the ship is away.
 * **Day budget:**
 
 | Phase | Duration | Cumulative | Buffer to Sol 45 |
@@ -184,7 +186,7 @@ Detailed, ordered milestones live in *Nexa Terra — Technical Architecture*. Th
 
 * Build *The Mullein* as four diegetic panel screens (Cockpit, Hab Commons, Engineering Core, Ventral Cargo Hold).
 * Implement character-specific panel overlays (Cal's flight HUD, Jonathan's voltage diagnostics, Maya's duct cross-section).
-* Build the diegetic Comms Hazard Terminal: the 3-choice interdiction encounter (ECM, Overclock Burn, Cargo Concession).
+* Build the diegetic Comms Hazard Terminal: the 3-choice interdiction encounter (ECM, Overclock Burn, Cargo Concession), with the concession offered as dump cargo, pay ransom or bluff.
 * Script the math for travel delays (with the +12 Sol random cap), reaction mass consumption, and cargo integrity loss.
 
 #### Phase 3: The Frontier Outpost & Commerce Slice
