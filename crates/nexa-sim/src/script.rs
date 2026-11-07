@@ -21,7 +21,7 @@
 //! ```
 //!
 //! `expect` keys: `sol`, `fuel`, `pods`, `credits`, `crates`, `integrity`,
-//! `delay`, `random-delay`, `ship` (pad, slip, holding), `machine ID STATE`,
+//! `delay`, `random-delay`, `settled` (hazards answered), `ship` (pad, slip, holding), `machine ID STATE`,
 //! `stress CREW LEVEL`, `side CREW SIDE`. Verbs for systems not built yet
 //! (`dock`, `haggle`, `give-fuel`, `audit`, `return`, `land`, `install-filters`)
 //! parse, and stop the run with [`RunError::NotBuilt`] when reached.
@@ -75,6 +75,8 @@ pub enum Expect {
     Integrity(u8),
     Delay(u32),
     RandomDelay(u32),
+    /// Hazards settled on the voyage so far.
+    Settled(usize),
     Ship(String),
     Machine(ModuleId, String),
     Stress(CrewId, String),
@@ -98,6 +100,7 @@ impl Expect {
                 *n,
                 voyage.map_or(0, |v| v.random_delay_sols()),
             ),
+            Expect::Settled(n) => cmp("settled", *n, voyage.map_or(0, |v| v.resolutions().len())),
             Expect::Ship(want) => {
                 let have = match world.ship.location() {
                     ShipLocation::Pad => "pad",
@@ -245,6 +248,7 @@ fn parse_expect(args: &[&str]) -> Result<Expect, String> {
         ["integrity", n] => Expect::Integrity(number(n)?),
         ["delay", n] => Expect::Delay(number(n)?),
         ["random-delay", n] => Expect::RandomDelay(number(n)?),
+        ["settled", n] => Expect::Settled(number(n)?),
         ["ship", w] => Expect::Ship(s(w)),
         ["machine", id, w] => Expect::Machine(ModuleId::new(*id), s(w)),
         ["stress", id, w] => Expect::Stress(CrewId::new(*id), s(w)),
