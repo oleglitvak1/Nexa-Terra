@@ -27,6 +27,7 @@ pub mod machines;
 pub mod orders;
 pub mod parts;
 pub mod rng;
+pub mod script;
 pub mod ship;
 pub mod universe;
 
