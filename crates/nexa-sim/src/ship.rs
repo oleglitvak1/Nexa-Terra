@@ -77,6 +77,8 @@ pub enum ShipError {
     IntegrityTooHigh(String),
     /// A saved ship has more pods than she can carry.
     TooManyPods(u8),
+    /// The hold's total mass doesn't fit a whole-kg `u32`.
+    HoldTooHeavy,
 }
 
 impl std::fmt::Display for ShipError {
@@ -98,6 +100,7 @@ impl std::fmt::Display for ShipError {
                 write!(f, "crate {id} integrity is above {MAX_INTEGRITY_PCT}%")
             }
             ShipError::TooManyPods(n) => write!(f, "{n} ECM pods is more than she carries"),
+            ShipError::HoldTooHeavy => write!(f, "the hold's total mass is out of range"),
         }
     }
 }
@@ -116,6 +119,11 @@ fn check_crates(crates: &[OreCrate]) -> Result<(), ShipError> {
             return Err(ShipError::IntegrityTooHigh(c.id.clone()));
         }
     }
+    // So `Ship::cargo_mass_kg` can't overflow.
+    crates
+        .iter()
+        .try_fold(0u32, |sum, c| sum.checked_add(c.mass_kg))
+        .ok_or(ShipError::HoldTooHeavy)?;
     Ok(())
 }
 
@@ -311,7 +319,7 @@ mod tests {
     #[test]
     fn bad_ship_content_is_refused() {
         type Bend = fn(&mut ShipDef);
-        let cases: [(Bend, ShipError); 7] = [
+        let cases: [(Bend, ShipError); 8] = [
             (|d| d.tank_l = 0, ShipError::EmptyTank),
             (
                 |d| d.start_fuel_l = 1001,
@@ -336,6 +344,10 @@ mod tests {
             (
                 |d| d.manifest[2].integrity_pct = 101,
                 ShipError::IntegrityTooHigh("crate_03".into()),
+            ),
+            (
+                |d| d.manifest[0].mass_kg = u32::MAX,
+                ShipError::HoldTooHeavy,
             ),
         ];
         for (bend, err) in cases {

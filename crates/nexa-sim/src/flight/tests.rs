@@ -2,7 +2,7 @@
 //! arrival, saves and determinism.
 
 use super::*;
-use crate::crew::SplitError;
+use crate::crew::{Assignment, SplitError};
 use crate::universe::OfflineUniverse;
 use nexa_types::LaunchBriefing;
 use std::collections::BTreeMap;
@@ -372,6 +372,7 @@ fn options_the_ship_cant_pay_are_unavailable() {
             "ecm" => o.cost.pods = 2,
             "pay" => o.cost.credits = 501,
             "overclock" => o.cost.overclock_burns = 5,
+            "dump" => o.cost.dump_crates = 11,
             _ => {}
         }
     }
@@ -381,6 +382,7 @@ fn options_the_ship_cant_pay_are_unavailable() {
         ("ecm", Unavailable::NoPods),
         ("pay", Unavailable::NotEnoughCredits),
         ("overclock", Unavailable::NotEnoughFuel),
+        ("dump", Unavailable::NotEnoughCrates),
     ] {
         assert_eq!(
             world.resolve_hazard(option),
@@ -391,9 +393,34 @@ fn options_the_ship_cant_pay_are_unavailable() {
 }
 
 #[test]
+fn an_overclock_must_leave_fuel_for_the_way_home() {
+    let mut rules = HazardsDef::shipped().clone();
+    for o in &mut rules.hazards[0].options {
+        if o.id == "overclock" {
+            // 650 L after launch: 300 L would leave 350 L, 450 L only 200 L.
+            o.cost.overclock_burns = 3;
+        }
+    }
+    let mut world = at_hazard(rules);
+    assert_eq!(
+        world.resolve_hazard("overclock"),
+        Err(FlightError::Unavailable(Unavailable::FuelReserve))
+    );
+    let mut world = at_hazard(HazardsDef::shipped().clone());
+    world.resolve_hazard("overclock").unwrap();
+    assert_eq!(world.ship.fuel_l(), 500);
+}
+
+#[test]
 fn random_delays_stop_at_the_round_trip_cap() {
     let mut world = crewed(3);
-    let rules = rigged("overclock", Outcome::Fail);
+    let mut rules = rigged("overclock", Outcome::Fail);
+    // Free burns, so three in a row don't run into the fuel reserve.
+    for o in &mut rules.hazards[0].options {
+        if o.id == "overclock" {
+            o.cost.overclock_burns = 0;
+        }
+    }
     world
         .launch_with_rules(&mut interdiction_on(&[1, 2, 3]), rules)
         .unwrap();
@@ -414,7 +441,7 @@ fn random_delays_stop_at_the_round_trip_cap() {
     let v = voyage(&world);
     assert_eq!((v.delay_sols(), v.random_delay_sols()), (12, 12));
     assert_eq!(v.sols_total(), 17);
-    assert_eq!(world.ship.fuel_l(), 650 - 3 * 150);
+    assert_eq!(world.ship.fuel_l(), 650);
 }
 
 #[test]
@@ -482,6 +509,49 @@ fn a_save_with_the_ship_out_of_place_is_rejected() {
     let edited = docked.replacen("location:Pad", "location:InSlip", 1);
     assert_ne!(edited, docked);
     assert!(ron::from_str::<World>(&edited).is_err());
+}
+
+#[test]
+fn a_saved_voyage_must_add_up() {
+    let world = at_hazard(HazardsDef::shipped().clone());
+    let ok = voyage(&world).clone();
+    assert_eq!(ok.check(&world.ship, &world.crew), Ok(()));
+    let bent: [fn(&mut Voyage); 5] = [
+        // Someone aboard who isn't on the Flight side.
+        |v| v.flight_crew.push(CrewId::new("elena")),
+        // A hazard on a Sol already flown.
+        |v| {
+            v.pending = None;
+            v.ahead.push(SlipEvent {
+                sol: 1,
+                hazard: HazardId::new("pirate_interdiction"),
+            });
+        },
+        // In transit with the whole leg flown.
+        |v| v.sols_flown = v.sols_total(),
+        // Holding short of the station.
+        |v| {
+            v.status = VoyageStatus::Holding;
+            v.pending = None;
+        },
+        // Holding with a hazard still waiting.
+        |v| {
+            v.status = VoyageStatus::Holding;
+            v.sols_flown = v.sols_total();
+        },
+    ];
+    for (i, bend) in bent.iter().enumerate() {
+        let mut v = ok.clone();
+        bend(&mut v);
+        let ship = if v.status == VoyageStatus::Holding {
+            let mut ship = world.ship.clone();
+            ship.set_location(ShipLocation::Holding(v.destination.clone()));
+            ship
+        } else {
+            world.ship.clone()
+        };
+        assert!(v.check(&ship, &world.crew).is_err(), "case {i}");
+    }
 }
 
 fn sols_started(events: &[SimEvent]) -> Vec<u64> {

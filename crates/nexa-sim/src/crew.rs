@@ -436,6 +436,13 @@ impl Crew {
         self.assignments.get(id).copied()
     }
 
+    /// Who is on the Flight side, in roster order.
+    pub fn flight(&self) -> impl Iterator<Item = &CrewMember> {
+        self.members()
+            .iter()
+            .filter(|c| self.assignment(&c.id) == Some(Assignment::Flight))
+    }
+
     pub fn vitals(&self, id: &CrewId) -> Option<&Vitals> {
         self.vitals.get(id)
     }
@@ -505,13 +512,7 @@ impl Crew {
         for (id, side) in &mut self.assignments {
             *side = assignments.get(id).copied().unwrap_or_default();
         }
-        Ok(self
-            .roster
-            .crew
-            .iter()
-            .filter(|c| self.assignments[&c.id] == Assignment::Flight)
-            .map(|c| c.id.clone())
-            .collect())
+        Ok(self.flight().map(|c| c.id.clone()).collect())
     }
 
     /// What a loaded save must satisfy: valid content for `colony`, one side

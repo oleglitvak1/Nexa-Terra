@@ -127,9 +127,7 @@ impl TryFrom<RawWorld> for World {
         let ship = raw.ship.unwrap_or_default();
         ship.check().map_err(LoadError::Ship)?;
         match &raw.voyage {
-            Some(voyage) => voyage
-                .check(&ship, crew.roster())
-                .map_err(LoadError::Voyage)?,
+            Some(voyage) => voyage.check(&ship, &crew).map_err(LoadError::Voyage)?,
             None if ship.location() != &ShipLocation::Pad => {
                 return Err(LoadError::Voyage("the ship is away with no voyage".into()))
             }

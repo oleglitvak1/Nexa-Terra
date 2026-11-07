@@ -9,7 +9,7 @@ use crate::terminal::{Ink, Terminal};
 use crate::ui::{wrap, ListPicker, Outcome, Pick};
 use macroquad::prelude::KeyCode;
 use nexa_sim::check::Outcome as Check;
-use nexa_sim::flight::{affordable, LaunchError, Paid, Resolution, Voyage, VoyageStatus};
+use nexa_sim::flight::{LaunchError, Resolution, Voyage, VoyageStatus};
 use nexa_sim::hazards::{HazardOption, Toll};
 use nexa_sim::machines::MachineState;
 use nexa_sim::{SimEvent, World};
@@ -33,7 +33,8 @@ pub fn launch_refusal(e: &LaunchError) -> &'static str {
         LaunchError::ShipAway => "SHIP AWAY",
         LaunchError::NoFlightCrew => "NO FLIGHT CREW",
         LaunchError::NotEnoughFuel { .. } => "LOW FUEL",
-        LaunchError::BadRules(_) | LaunchError::BadBriefing(_) => "BAD BRIEFING",
+        LaunchError::BadRules(_) => "BAD HAZARD DATA",
+        LaunchError::BadBriefing(_) => "BAD BRIEFING",
     }
 }
 
@@ -64,7 +65,7 @@ fn outcome_label(outcome: Check) -> &'static str {
     }
 }
 
-/// "ECM: CAL 31 VS 30, CLEAN ESCAPE. -1 POD"
+/// "ECM: CAL 31 VS 30, CLEAN ESCAPE. PAID 1 POD"
 pub fn resolution_line(r: &Resolution) -> String {
     let roll = r.roll.as_ref().map_or(String::new(), |roll| {
         let who = roll
@@ -73,37 +74,17 @@ pub fn resolution_line(r: &Resolution) -> String {
             .map_or("NOBODY".to_string(), |c| c.as_str().to_uppercase());
         format!("{who} {} VS {}, ", roll.score, roll.difficulty)
     });
-    let paid = paid_text(&r.paid);
-    let sep = if paid.is_empty() { "" } else { ". " };
+    let parts = r.paid.parts();
+    let paid = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(". PAID {}", parts.join(", ").to_uppercase())
+    };
     format!(
-        "{}: {roll}{}{sep}{paid}",
+        "{}: {roll}{}{paid}",
         r.option.to_uppercase(),
         outcome_label(r.outcome)
     )
-}
-
-/// What a settled hazard cost, e.g. "-150 L -1 POD +6 SOLS".
-pub fn paid_text(p: &Paid) -> String {
-    let mut parts = Vec::new();
-    if p.fuel_l > 0 {
-        parts.push(format!("-{} L", p.fuel_l));
-    }
-    if p.pods > 0 {
-        parts.push(format!("-{} POD", p.pods));
-    }
-    if p.credits > 0 {
-        parts.push(format!("-{} CR", p.credits));
-    }
-    if p.crates_dumped > 0 {
-        parts.push(format!("-{} CRATES", p.crates_dumped));
-    }
-    if p.cargo_damage_pct > 0 {
-        parts.push(format!("CARGO -{}%", p.cargo_damage_pct));
-    }
-    if p.delay_sols > 0 {
-        parts.push(format!("+{} SOLS", p.delay_sols));
-    }
-    parts.join(" ")
 }
 
 /// The up-front cost, as the terminal lists it.
@@ -134,7 +115,7 @@ fn option_line(world: &World, option: &HazardOption) -> (String, bool) {
     });
     let cost = cost_text(&option.cost, world.ship.def().overclock_burn_l);
     let line = format!("{:<10}{:<20}{cost}", option.id.to_uppercase(), check);
-    match affordable(&world.ship, world.credits, &option.cost) {
+    match world.affordable(&option.cost) {
         Ok(()) => (line, true),
         Err(why) => (
             format!("{line}  ({})", why.to_string().to_uppercase()),

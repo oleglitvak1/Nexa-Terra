@@ -112,6 +112,10 @@ fn main() {
     }
 
     if let Some(seeds) = sweep {
+        // A sweep flies from landfall over seeds 0..N; refuse what it would ignore.
+        if launch || seed.is_some() || sols.is_some() || preset.is_some() {
+            usage("--sweep takes only --split and --resolve");
+        }
         run_sweep(
             seeds,
             split.as_deref().unwrap_or(slip::DEFAULT_FLIGHT),
@@ -125,8 +129,12 @@ fn main() {
     let option = match (launch, resolve) {
         (true, Some(option)) => Some(option),
         (true, None) => usage("--launch needs --resolve OPTION"),
-        (false, _) => None,
+        (false, Some(_)) => usage("--resolve needs --launch or --sweep"),
+        (false, None) => None,
     };
+    if !launch && seed.is_some() {
+        usage("--seed needs --launch");
+    }
     let sols = sols.unwrap_or(if launch { 0 } else { DEFAULT_SOLS });
 
     let mut world = match seed {

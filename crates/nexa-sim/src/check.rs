@@ -4,7 +4,7 @@
 //! die from 1 to `die_sides` on top. At or above the difficulty is a Success,
 //! within `partial_band` below it a Partial, lower a Fail.
 
-use crate::crew::{Assignment, Crew, Skill};
+use crate::crew::{Crew, Skill};
 use crate::rng::SimRng;
 use nexa_types::CrewId;
 use serde::{Deserialize, Serialize};
@@ -69,12 +69,12 @@ pub struct Roll {
 pub fn check(crew: &Crew, def: &CheckDef, tuning: &CheckTuning, rng: &mut SimRng) -> Roll {
     // (member, base score, bonus); ties keep the earlier member in the roster.
     let mut best: Option<(&CrewId, u32, u32)> = None;
-    for c in crew.members() {
-        if crew.assignment(&c.id) != Some(Assignment::Flight) {
-            continue;
-        }
+    for c in crew.flight() {
         let bonus = def.specialists.get(&c.id).copied().unwrap_or(0);
-        let base = u32::from(c.skill(def.skill)) * tuning.skill_weight + bonus;
+        // Saturating: tuning and bonuses come from content and saves, unbounded.
+        let base = u32::from(c.skill(def.skill))
+            .saturating_mul(tuning.skill_weight)
+            .saturating_add(bonus);
         if best.is_none_or(|(_, b, _)| base > b) {
             best = Some((&c.id, base, bonus));
         }
@@ -84,10 +84,10 @@ pub fn check(crew: &Crew, def: &CheckDef, tuning: &CheckTuning, rng: &mut SimRng
         Some((id, base, bonus)) => (Some(id.clone()), base, bonus),
         None => (None, 0, 0),
     };
-    let score = base + die;
+    let score = base.saturating_add(die);
     let outcome = if score >= def.difficulty {
         Outcome::Success
-    } else if score + tuning.partial_band >= def.difficulty {
+    } else if score.saturating_add(tuning.partial_band) >= def.difficulty {
         Outcome::Partial
     } else {
         Outcome::Fail
@@ -106,7 +106,7 @@ pub fn check(crew: &Crew, def: &CheckDef, tuning: &CheckTuning, rng: &mut SimRng
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crew::Roster;
+    use crate::crew::{Assignment, Roster};
 
     const TUNING: CheckTuning = CheckTuning {
         skill_weight: 3,
@@ -211,6 +211,19 @@ mod tests {
         );
         assert_eq!(roll.crew, None);
         assert_eq!(roll.score, roll.die);
+    }
+
+    #[test]
+    fn extreme_tuning_saturates_instead_of_overflowing() {
+        let crew = flying(Roster::default(), &["cal"]);
+        let tuning = CheckTuning {
+            skill_weight: u32::MAX,
+            die_sides: 20,
+            partial_band: u32::MAX,
+        };
+        let d = def(Skill::Piloting, u32::MAX, &[("cal", u32::MAX)]);
+        let roll = check(&crew, &d, &tuning, &mut SimRng::new(1));
+        assert_eq!((roll.score, roll.outcome), (u32::MAX, Outcome::Success));
     }
 
     #[test]

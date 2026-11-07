@@ -68,31 +68,9 @@ pub fn describe(r: &Resolution) -> String {
             roll.score, roll.difficulty, roll.die, roll.bonus
         );
     }
-    let p = &r.paid;
-    let mut paid = Vec::new();
-    if p.fuel_l > 0 {
-        paid.push(format!("{} L", p.fuel_l));
-    }
-    if p.pods > 0 {
-        paid.push(format!("{} pod", p.pods));
-    }
-    if p.credits > 0 {
-        paid.push(format!("{} cr", p.credits));
-    }
-    if p.crates_dumped > 0 {
-        paid.push(format!(
-            "{} crates ({} kg)",
-            p.crates_dumped, p.mass_dumped_kg
-        ));
-    }
-    if p.cargo_damage_pct > 0 {
-        paid.push(format!("cargo -{}%", p.cargo_damage_pct));
-    }
-    if p.delay_sols > 0 || p.delay_cut_sols > 0 {
-        paid.push(format!(
-            "+{} Sols (cap cut {})",
-            p.delay_sols, p.delay_cut_sols
-        ));
+    let mut paid = r.paid.parts();
+    if r.paid.delay_cut_sols > 0 {
+        paid.push(format!("{} Sols cut by the cap", r.paid.delay_cut_sols));
     }
     if !paid.is_empty() {
         line += &format!("; paid {}", paid.join(", "));

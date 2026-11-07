@@ -137,11 +137,7 @@ impl CrewScreen {
         let crew = &world.crew;
         let members = crew.members();
         t.put_str(LEFT, TOP, "CREW MANIFEST // THE SPLIT", Ink::Bright);
-        let flying = crew
-            .members()
-            .iter()
-            .filter(|c| crew.assignment(&c.id) == Some(Assignment::Flight))
-            .count();
+        let flying = crew.flight().count();
         let split = format!("{flying} FLY  {} STAY", members.len() - flying);
         t.put_str(LEFT + WIDTH - split.len(), TOP, &split, Ink::Amber);
 

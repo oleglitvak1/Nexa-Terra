@@ -2,6 +2,7 @@
 
 use super::*;
 use nexa_sim::crew::Assignment;
+use nexa_sim::flight::Paid;
 use nexa_sim::hazards::HazardsDef;
 use nexa_sim::universe::OfflineUniverse;
 use nexa_types::CrewId;
@@ -203,7 +204,7 @@ fn a_choice_settles_the_hazard_and_logs_it() {
     assert!(s.world.voyage.as_ref().unwrap().pending().is_none());
     assert_eq!(s.world.credits, 200);
     let text = s.text();
-    assert!(text.contains("PAY: CLEAN ESCAPE. -300 CR"), "{text}");
+    assert!(text.contains("PAY: CLEAN ESCAPE. PAID 300 CR"), "{text}");
     assert!(text.contains("CREDITS 200"), "{text}");
     assert!(text.contains(HELP_TRANSIT), "{text}");
 }
@@ -258,7 +259,7 @@ fn resolution_lines_show_the_roll_and_the_cost() {
     };
     assert_eq!(
         resolution_line(&r),
-        "OVERCLOCK: JONATHAN 22 VS 30, FAILED. -150 L +8 SOLS"
+        "OVERCLOCK: JONATHAN 22 VS 30, FAILED. PAID 150 L, +8 SOLS"
     );
 }
 
@@ -295,4 +296,12 @@ fn launch_refusals_fit_the_base_log() {
     let line = format!("{} LAUNCH REFUSED: {}", world.now, launch_refusal(&e));
     assert!(line.len() <= 41, "{line}");
     assert_eq!(launch_refusal(&LaunchError::ShipAway), "SHIP AWAY");
+    let bad_data = LaunchError::BadRules(nexa_sim::hazards::HazardError::NoHazards);
+    let line = format!(
+        "{} LAUNCH REFUSED: {}",
+        world.now,
+        launch_refusal(&bad_data)
+    );
+    assert_eq!(line, "S000 H00 LAUNCH REFUSED: BAD HAZARD DATA");
+    assert!(line.len() <= 41);
 }

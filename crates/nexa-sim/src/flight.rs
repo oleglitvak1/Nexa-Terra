@@ -6,7 +6,7 @@
 //! ends there: the ship holds over the station until milestone 6 docks her.
 
 use crate::check::{check, Outcome, Roll};
-use crate::crew::{Assignment, Roster};
+use crate::crew::Crew;
 use crate::hazards::{HazardDef, HazardError, HazardsDef, Toll};
 use crate::ship::{Ship, ShipLocation};
 use crate::universe::Universe;
@@ -41,6 +41,36 @@ pub struct Paid {
     pub delay_sols: u32,
     /// Sols of random delay the round-trip cap took off.
     pub delay_cut_sols: u32,
+}
+
+impl Paid {
+    /// What was paid, one short part per kind, e.g. `["150 L", "+6 Sols"]`.
+    /// Sols the cap cut aren't a cost, so they're left to the caller.
+    pub fn parts(&self) -> Vec<String> {
+        let mut parts = Vec::new();
+        if self.fuel_l > 0 {
+            parts.push(format!("{} L", self.fuel_l));
+        }
+        if self.pods > 0 {
+            parts.push(format!("{} pod", self.pods));
+        }
+        if self.credits > 0 {
+            parts.push(format!("{} cr", self.credits));
+        }
+        if self.crates_dumped > 0 {
+            parts.push(format!(
+                "{} crates ({} kg)",
+                self.crates_dumped, self.mass_dumped_kg
+            ));
+        }
+        if self.cargo_damage_pct > 0 {
+            parts.push(format!("cargo -{}%", self.cargo_damage_pct));
+        }
+        if self.delay_sols > 0 {
+            parts.push(format!("+{} Sols", self.delay_sols));
+        }
+        parts
+    }
 }
 
 /// How a hazard was settled.
@@ -153,10 +183,14 @@ impl Voyage {
     }
 
     /// What a loaded save must satisfy.
-    pub(crate) fn check(&self, ship: &Ship, roster: &Roster) -> Result<(), String> {
+    pub(crate) fn check(&self, ship: &Ship, crew: &Crew) -> Result<(), String> {
         self.rules
-            .check(roster)
+            .check(crew.roster())
             .map_err(|e| format!("hazard content: {e}"))?;
+        // Checks roll for whoever is on the Flight side, so it must be who flew.
+        if !crew.flight().map(|c| &c.id).eq(&self.flight_crew) {
+            return Err("the flight crew isn't the crew's Flight side".into());
+        }
         if let Some(id) = &self.pending {
             if self.rules.hazard(id).is_none() {
                 return Err(format!("pending hazard {id} isn't in its content"));
@@ -169,13 +203,31 @@ impl Voyage {
         {
             return Err(format!("hazard {} ahead isn't in its content", e.hazard));
         }
+        // A hazard behind the ship would never fire; one on this Sol only
+        // waits behind the pending one.
+        if let Some(e) = self.ahead.iter().find(|e| {
+            e.sol < self.sols_flown || (e.sol == self.sols_flown && self.pending.is_none())
+        }) {
+            return Err(format!(
+                "hazard {} on Sol {} is behind the ship",
+                e.hazard, e.sol
+            ));
+        }
         if self.random_delay_sols > self.rules.delays.random_cap_sols
             || self.random_delay_sols > self.delay_sols
         {
             return Err("random delay is over its cap".into());
         }
-        if self.sols_flown > self.sols_total() {
-            return Err("flew more Sols than the leg has".into());
+        let leg_done = match self.status {
+            VoyageStatus::InTransit => self.sols_flown < self.sols_total(),
+            VoyageStatus::Holding => {
+                self.sols_flown == self.sols_total()
+                    && self.pending.is_none()
+                    && self.ahead.is_empty()
+            }
+        };
+        if !leg_done {
+            return Err("the Sols flown don't fit the voyage's status".into());
         }
         let placed = match (self.status, ship.location()) {
             (VoyageStatus::InTransit, ShipLocation::InSlip) => true,
@@ -243,7 +295,9 @@ pub enum Unavailable {
     NoPods,
     NotEnoughFuel,
     NotEnoughCredits,
-    EmptyHold,
+    NotEnoughCrates,
+    /// Would leave too little fuel to fly the next leg home.
+    FuelReserve,
 }
 
 impl std::fmt::Display for Unavailable {
@@ -252,7 +306,8 @@ impl std::fmt::Display for Unavailable {
             Unavailable::NoPods => "no ecm pods left",
             Unavailable::NotEnoughFuel => "not enough fuel",
             Unavailable::NotEnoughCredits => "not enough credits",
-            Unavailable::EmptyHold => "the hold is empty",
+            Unavailable::NotEnoughCrates => "not enough crates in the hold",
+            Unavailable::FuelReserve => "would leave too little fuel to get home",
         })
     }
 }
@@ -284,25 +339,38 @@ impl std::fmt::Display for FlightError {
 
 impl std::error::Error for FlightError {}
 
-/// Whether the ship and purse can pay `cost` up front.
-pub fn affordable(ship: &Ship, credits: u32, cost: &Toll) -> Result<(), Unavailable> {
-    if ship.pods() < cost.pods {
-        return Err(Unavailable::NoPods);
-    }
-    let fuel = u32::from(cost.overclock_burns) * ship.def().overclock_burn_l;
-    if ship.fuel_l() < fuel {
-        return Err(Unavailable::NotEnoughFuel);
-    }
-    if credits < cost.credits {
-        return Err(Unavailable::NotEnoughCredits);
-    }
-    if cost.dump_crates > 0 && ship.cargo().is_empty() {
-        return Err(Unavailable::EmptyHold);
-    }
-    Ok(())
-}
-
 impl World {
+    /// Whether the ship and purse can pay `cost` in full, up front, and still
+    /// burn the legs left to get home.
+    pub fn affordable(&self, cost: &Toll) -> Result<(), Unavailable> {
+        let ship = &self.ship;
+        if ship.pods() < cost.pods {
+            return Err(Unavailable::NoPods);
+        }
+        let fuel = u32::from(cost.overclock_burns).saturating_mul(ship.def().overclock_burn_l);
+        if ship.fuel_l() < fuel {
+            return Err(Unavailable::NotEnoughFuel);
+        }
+        if fuel > 0 && ship.fuel_l() - fuel < self.fuel_reserve_l() {
+            return Err(Unavailable::FuelReserve);
+        }
+        if self.credits < cost.credits {
+            return Err(Unavailable::NotEnoughCredits);
+        }
+        if (ship.cargo().len() as u64) < u64::from(cost.dump_crates) {
+            return Err(Unavailable::NotEnoughCrates);
+        }
+        Ok(())
+    }
+
+    /// Fuel to keep back for the legs still to fly after this one.
+    fn fuel_reserve_l(&self) -> u32 {
+        match self.voyage.as_ref().map(|v| v.leg) {
+            Some(Leg::Outbound) => self.ship.def().leg_burn_l,
+            None => 0,
+        }
+    }
+
     /// Launch The Mullein into The Slip with the shipped hazard content.
     pub fn launch(&mut self, universe: &mut dyn Universe) -> Result<Vec<SimEvent>, LaunchError> {
         self.launch_with_rules(universe, HazardsDef::shipped().clone())
@@ -318,13 +386,7 @@ impl World {
         if self.voyage.is_some() || self.ship.location() != &ShipLocation::Pad {
             return Err(LaunchError::ShipAway);
         }
-        let flight_crew: Vec<CrewId> = self
-            .crew
-            .members()
-            .iter()
-            .filter(|c| self.crew.assignment(&c.id) == Some(Assignment::Flight))
-            .map(|c| c.id.clone())
-            .collect();
+        let flight_crew: Vec<CrewId> = self.crew.flight().map(|c| c.id.clone()).collect();
         if flight_crew.is_empty() {
             return Err(LaunchError::NoFlightCrew);
         }
@@ -446,7 +508,8 @@ impl World {
             .cloned()
             .ok_or_else(|| FlightError::NoSuchOption(option_id.to_string()))?;
         let tuning = voyage.rules.checks;
-        affordable(&self.ship, self.credits, &option.cost).map_err(FlightError::Unavailable)?;
+        self.affordable(&option.cost)
+            .map_err(FlightError::Unavailable)?;
 
         let mut paid = Paid::default();
         self.pay(&option.cost, &mut paid);
