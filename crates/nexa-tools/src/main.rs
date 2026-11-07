@@ -14,7 +14,13 @@
 //! the interdiction's, unless one is given) and prints outcome rates and mean
 //! fuel, cargo, credits and delay at arrival. Both fly `cal,jonathan,dax`
 //! unless `--split` says otherwise.
+//!
+//! Scripts: `--script FILE [--seed N]` plays a script (see `nexa_sim::script`)
+//! at full speed and logs every step and event. `--seed` overrides the
+//! script's own. Exit code 0: it ran to the end; 1: a step failed; 2: it
+//! reached a system that isn't built yet.
 
+mod script;
 mod slip;
 
 use nexa_sim::crew::{Assignment, StressLevel};
@@ -86,9 +92,16 @@ fn main() {
     let mut seed: Option<u64> = None;
     let mut resolve: Option<String> = None;
     let mut sweep: Option<u64> = None;
+    let mut script: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            // Accepted so `--headless --script` reads the same here and in the game.
+            "--headless" => {}
+            "--script" => match args.next() {
+                Some(path) => script = Some(path),
+                None => usage("--script needs a file"),
+            },
             "--launch" => launch = true,
             "--seed" => seed = Some(next_number(&mut args, "--seed")),
             "--sweep" => sweep = Some(next_number(&mut args, "--sweep")),
@@ -111,6 +124,12 @@ fn main() {
         }
     }
 
+    if let Some(path) = script {
+        if launch || sweep.is_some() || sols.is_some() || preset.is_some() || split.is_some() {
+            usage("--script takes only --seed");
+        }
+        std::process::exit(script::run_file(&path, seed));
+    }
     if let Some(seeds) = sweep {
         // A sweep flies from landfall over seeds 0..N; refuse what it would ignore.
         if launch || seed.is_some() || sols.is_some() || preset.is_some() {
@@ -234,7 +253,7 @@ fn main() {
 }
 
 /// One line per event; `fires` counts each order slot's firings.
-fn log_event(now: Tick, event: &SimEvent, fires: &mut [u64]) {
+pub(crate) fn log_event(now: Tick, event: &SimEvent, fires: &mut [u64]) {
     match event {
         SimEvent::SolStarted { sol } => println!("[SIM] SOL {sol:03} BEGINS"),
         SimEvent::MachineStateChanged { module, state } => {
@@ -343,6 +362,7 @@ fn usage(problem: &str) -> ! {
     eprintln!("usage: nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]");
     eprintln!("       nexa-tools [SOLS] --launch --resolve OPTION [--seed N] [--split ...]");
     eprintln!("       nexa-tools --sweep N [--resolve OPTION] [--split ...]");
+    eprintln!("       nexa-tools [--headless] --script FILE [--seed N]");
     let options: Vec<&str> = HazardsDef::shipped().hazards[0]
         .options
         .iter()

@@ -147,6 +147,8 @@ fn same(what: &str, want: &str, have: &str) -> Result<(), String> {
 pub struct Line {
     pub number: usize,
     pub step: Step,
+    /// The line as written, comment stripped.
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,7 +184,11 @@ pub fn parse(text: &str) -> Result<Vec<Line>, ParseError> {
                 message: "seed must be the first step".into(),
             });
         }
-        lines.push(Line { number, step });
+        lines.push(Line {
+            number,
+            step,
+            text: content.to_string(),
+        });
     }
     Ok(lines)
 }
