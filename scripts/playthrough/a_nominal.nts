@@ -1,0 +1,32 @@
+# (a) Clean nominal run to the first-rain milestone.
+# GDD day budget: 10 Sols ground, 5 out, 3 docked, 5 back -> Sol 23.
+seed 4                          # Jonathan's overclock succeeds on this seed
+screenshot landing
+orders caretaker
+run-to 10
+screenshot colony-sol10
+split cal,jonathan,dax
+screenshot split
+close
+launch
+fly overclock
+screenshot holding
+expect sol 15
+expect fuel 500
+expect delay 0
+expect credits 500
+expect crates 10
+expect machine hab_01 nominal
+expect machine hab_02 nominal
+expect stress maya calm
+close
+screenshot colony-after-catchup
+# Milestone 6 from here.
+dock
+haggle carbon-filters
+return
+land
+expect sol 23
+screenshot blackbox
+install-filters
+screenshot rain

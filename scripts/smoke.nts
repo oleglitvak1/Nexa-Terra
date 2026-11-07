@@ -1,7 +1,0 @@
-# Smoke test: Split, launch, pay through the interdiction.
-seed 7
-split cal,jonathan,dax
-launch
-expect fuel 650
-fly pay
-expect ship holding

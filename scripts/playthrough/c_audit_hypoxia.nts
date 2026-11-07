@@ -1,0 +1,21 @@
+# (c) Bad luck plus a player-caused audit: the colony is lost.
+# GDD: 35 (max random) + a 14-Sol audit = Sol 49. Hypoxia Sols 45-47,
+# crew unconscious Sol 48, colony lost from Sol 49 with an autopsy log.
+seed 7                          # severe drift +10 outbound
+orders caretaker
+run-to 10
+split cal,jonathan,dax
+close
+launch
+fly overclock
+expect sol 25
+expect random-delay 10
+close
+# Milestone 6 from here.
+dock
+haggle salt-the-crates          # deception raises Station Heat
+audit 14                        # uncapped: player-caused
+return
+land
+expect sol 49
+screenshot autopsy
