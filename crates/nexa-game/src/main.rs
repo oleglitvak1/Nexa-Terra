@@ -6,20 +6,33 @@
 //! both while the colony is held. `[L]` launches The Mullein into The Slip:
 //! the voyage screen flies her Sol by Sol to Scrap Barge 77, and the colony
 //! catches up on arrival.
+//!
+//! Testing: `--seed N` fixes the RNG. `--script FILE` plays a script (see
+//! `nexa_sim::script`) through the real screens at full speed, printing the
+//! base log; `--headless` plays it with no window. `--screenshot-at
+//! MOMENT,... --out DIR` saves PNGs at sim moments or Sols, as well as at the
+//! script's own `screenshot` steps.
 
 mod colony_view;
 mod crew_view;
+mod driver;
 mod orders_view;
+mod pacing;
+mod platform;
 mod terminal;
 mod ui;
 mod voyage_view;
 
 use crew_view::CrewScreen;
+use driver::{Act, Driver, Moments, On};
 use macroquad::prelude::*;
+use nexa_sim::script::{self, Step};
 use nexa_sim::universe::OfflineUniverse;
 use nexa_sim::{SimEvent, World};
 use nexa_types::Tick;
 use orders_view::OrdersEditor;
+use pacing::Clock;
+use platform::Options;
 use std::collections::VecDeque;
 use terminal::{Ink, Terminal};
 use ui::Outcome;
@@ -40,9 +53,6 @@ const BOOT_PROMPT_ROW: usize = ROWS - 5;
 
 /// Log lines kept for the base log; more than the screen shows.
 const LOG_CAPACITY: usize = 64;
-
-/// Real seconds per simulated hour at 1x speed (GDD: 1 hour = 5 s).
-const SECONDS_PER_HOUR_AT_1X: f64 = 5.0;
 
 const BOOT_LINES: &[&str] = &[
     "NEXA TERRA // MULLEIN SYSTEMS v0.1",
@@ -76,14 +86,17 @@ struct App {
     /// Everything off-colony; offline until the shared universe exists.
     universe: OfflineUniverse,
     screen: Screen,
-    paused: bool,
-    speed: u32,
-    hour_accumulator: f64,
+    clock: Clock,
+    /// `--seed`: used at boot instead of the boot timing.
+    seed: Option<u64>,
+    /// Driven by a script: the clock only moves on `run` steps, and the base
+    /// log is printed as well as shown.
+    scripted: bool,
     log: VecDeque<String>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(seed: Option<u64>) -> Self {
         Self {
             term: Terminal::new(COLS, ROWS),
             world: World::landfall(),
@@ -91,10 +104,52 @@ impl App {
             screen: Screen::Boot {
                 started: get_time(),
             },
-            paused: false,
-            speed: 1,
-            hour_accumulator: 0.0,
+            clock: Clock::default(),
+            seed,
+            scripted: false,
             log: VecDeque::new(),
+        }
+    }
+
+    /// Straight to the colony screen with a script's world.
+    fn scripted(world: World) -> Self {
+        Self {
+            world,
+            screen: Screen::Online,
+            scripted: true,
+            ..Self::new(None)
+        }
+    }
+
+    fn on(&self) -> On {
+        match self.screen {
+            Screen::Boot { .. } => On::Boot,
+            Screen::Online => On::Colony,
+            Screen::Orders(_) => On::Orders,
+            Screen::Crew(_) => On::Crew,
+            Screen::Voyage(_) => On::Voyage,
+        }
+    }
+
+    /// Run the colony `hours` hours, logging each.
+    fn run_hours(&mut self, hours: u64) {
+        for _ in 0..hours {
+            let at = self.world.now;
+            let events = self.world.tick();
+            self.log_events(at, &events);
+        }
+    }
+
+    /// A script step that goes straight to the sim.
+    fn sim_step(&mut self, step: &Step) -> Result<(), String> {
+        match step {
+            Step::Orders(name) => {
+                script::load_preset(&mut self.world, name).map_err(|e| e.to_string())?;
+                self.push_log(format!("{} ORDERS LOADED: {}", self.world.now, name));
+                Ok(())
+            }
+            Step::Expect(e) => e.check(&self.world),
+            other => Err(format!("{other:?} is not a sim step")),
         }
     }
 
@@ -111,7 +166,8 @@ impl App {
                 if boot_done && key.is_some() {
                     // Seed from how long the player took to boot, so each game
                     // rolls differently; the sim itself never reads the clock.
-                    self.world = World::landfall_seeded(get_time().to_bits());
+                    let seed = self.seed.unwrap_or_else(|| get_time().to_bits());
+                    self.world = World::landfall_seeded(seed);
                     self.screen = Screen::Online;
                 }
             }
@@ -121,20 +177,15 @@ impl App {
                     Some(KeyCode::O) => self.screen = Screen::Orders(OrdersEditor::new()),
                     Some(KeyCode::C) => self.screen = Screen::Crew(CrewScreen::new(&self.world)),
                     Some(KeyCode::L) => self.launch(),
-                    Some(KeyCode::Space) => self.paused = !self.paused,
-                    Some(KeyCode::Key1) => self.speed = 1,
-                    Some(KeyCode::Key2) => self.speed = 2,
-                    Some(KeyCode::Key3) => self.speed = 3,
+                    Some(KeyCode::Space) => self.clock.paused = !self.clock.paused,
+                    Some(KeyCode::Key1) => self.clock.set_speed(1),
+                    Some(KeyCode::Key2) => self.clock.set_speed(2),
+                    Some(KeyCode::Key3) => self.clock.set_speed(3),
                     _ => {}
                 }
-                if !self.paused {
-                    self.hour_accumulator += get_frame_time() as f64 * self.speed as f64;
-                    while self.hour_accumulator >= SECONDS_PER_HOUR_AT_1X {
-                        self.hour_accumulator -= SECONDS_PER_HOUR_AT_1X;
-                        let at = self.world.now;
-                        let events = self.world.tick();
-                        self.log_events(at, &events);
-                    }
+                if !self.scripted {
+                    let hours = self.clock.hours(f64::from(get_frame_time()));
+                    self.run_hours(u64::from(hours));
                 }
             }
             Screen::Orders(editor) => {
@@ -186,6 +237,9 @@ impl App {
     }
 
     fn push_log(&mut self, line: String) {
+        if self.scripted {
+            println!("[LOG] {line}");
+        }
         if self.log.len() == LOG_CAPACITY {
             self.log.pop_front();
         }
@@ -220,10 +274,10 @@ impl App {
                 }
             }
             Screen::Online => {
-                let status = if self.paused {
+                let status = if self.clock.paused {
                     "PAUSED".to_string()
                 } else {
-                    format!("RUNNING {}x", self.speed)
+                    format!("RUNNING {}x", self.clock.speed())
                 };
                 draw_title(
                     t,
@@ -286,14 +340,156 @@ fn window_conf() -> Conf {
     }
 }
 
-#[macroquad::main(window_conf)]
-async fn main() {
-    let mut app = App::new();
+fn main() {
+    let opts = match platform::options() {
+        Ok(opts) => opts,
+        Err(e) => {
+            eprintln!("nexa-game: {e}");
+            eprintln!("usage: nexa-game [--seed N] [--script FILE [--headless | --screenshot-at MOMENT,... --out DIR]]");
+            std::process::exit(64);
+        }
+    };
+    if opts.headless {
+        std::process::exit(run_headless(&opts));
+    }
+    macroquad::Window::from_config(window_conf(), run(opts));
+}
+
+/// A script and the world it starts from, or why not.
+fn load_script(opts: &Options) -> Result<(Vec<script::Line>, World), String> {
+    let path = opts.script.as_deref().unwrap_or_default();
+    let lines = script::parse(&platform::read_text(path)?).map_err(|e| format!("{path}: {e}"))?;
+    let world = match opts.seed {
+        Some(seed) => World::landfall_seeded(seed),
+        None => script::start(&lines),
+    };
+    Ok((lines, world))
+}
+
+/// `--headless --script`: the sim alone, logged in the base log's words.
+fn run_headless(opts: &Options) -> i32 {
+    let (lines, mut world) = match load_script(opts) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            eprintln!("[SCRIPT] {e}");
+            return 1;
+        }
+    };
+    let mut universe = OfflineUniverse::default();
+    for line in lines.iter().filter(|l| !matches!(l.step, Step::Seed(_))) {
+        println!("[SCRIPT] {:>3}: {}", line.number, line.text);
+        let mut at = world.now;
+        match script::run_step(&mut world, &mut universe, &line.step) {
+            Ok(out) => {
+                for event in out.events.iter().chain(&out.colony) {
+                    if let SimEvent::SolStarted { sol } = event {
+                        at = Tick(sol * nexa_types::TICKS_PER_SOL);
+                    }
+                    println!("[LOG] {}", colony_view::log_line(at, event));
+                }
+            }
+            Err(e) => {
+                println!("[SCRIPT] {:>3}: {e}", line.number);
+                return match e {
+                    script::RunError::NotBuilt(_) => 2,
+                    _ => 1,
+                };
+            }
+        }
+    }
+    println!("[SCRIPT] ran to the end at {}", world.now);
+    0
+}
+
+async fn run(opts: Options) {
+    let code = match &opts.script {
+        None => {
+            let mut app = App::new(opts.seed);
+            while app.update(get_last_key_pressed()) {
+                app.render();
+                next_frame().await;
+            }
+            0
+        }
+        Some(path) => match load_script(&opts) {
+            Ok((lines, world)) => {
+                println!("[SCRIPT] {path}");
+                play(lines, world, &opts).await
+            }
+            Err(e) => {
+                eprintln!("[SCRIPT] {e}");
+                1
+            }
+        },
+    };
+    std::process::exit(code);
+}
+
+/// Play a script through the screens, one action per frame, saving screenshots.
+async fn play(lines: Vec<script::Line>, world: World, opts: &Options) -> i32 {
+    let mut app = App::scripted(world);
+    let mut driver = Driver::new(lines);
+    let mut moments = Moments::new(opts.shots_at.clone(), &app.world);
+    let mut shots = 0;
+    let mut last_line = 0;
     loop {
-        if !app.update(get_last_key_pressed()) {
-            break;
+        let mut names = Vec::new();
+        let mut exit = None;
+        let act = driver.act(app.on(), &app.world);
+        if driver.line() != last_line {
+            last_line = driver.line();
+            if let Some(text) = driver.text() {
+                println!("[SCRIPT] {last_line:>3}: {text}");
+            }
+        }
+        let key = match act {
+            Act::Key(k) => Some(k),
+            Act::Hours(h) => {
+                app.run_hours(h);
+                None
+            }
+            Act::Sim(step) => {
+                if let Err(e) = app.sim_step(&step) {
+                    exit = Some((format!("line {last_line}: {e}"), 1));
+                }
+                None
+            }
+            Act::Shot(name) => {
+                names.push(name);
+                None
+            }
+            Act::Idle => None,
+            Act::Done => {
+                println!("[SCRIPT] ran to the end at {}", app.world.now);
+                return 0;
+            }
+            Act::Fail(why, code) => {
+                exit = Some((why, code));
+                None
+            }
+        };
+        if !app.update(key) {
+            return 0;
+        }
+        names.extend(moments.check(&app.world));
+        if exit.is_some() {
+            names.push("stopped".into());
         }
         app.render();
+        if let Some(dir) = &opts.out {
+            for name in names {
+                shots += 1;
+                let image = get_screen_data();
+                match platform::save_png(&image, dir, &format!("{shots:02}-{name}")) {
+                    Ok(path) => println!("[SHOT] {}", path.display()),
+                    Err(e) => eprintln!("[SHOT] {e}"),
+                }
+            }
+        }
+        if let Some((why, code)) = exit {
+            println!("[SCRIPT] {why}");
+            return code;
+        }
         next_frame().await;
     }
 }
