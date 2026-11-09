@@ -29,6 +29,9 @@ That trigger is dropped.
 | Old saves | Modules with matching IDs (`smelter_01`, `scrubber_01`) get the shipped `ore`, `guard` and `scrubber` blocks on load, as the crew migration did for habs. The meter starts at the hours already elapsed. |
 | While Unconscious | Only automation works: Standing Orders and the guard keep switching; manual repairs are refused; production stops. |
 | Ore while away | Ore piles up in a ground stockpile and fills the hold when she's back on the pad (used from milestone 8). |
+| What a posture sets | Its cards **and** guard settings: loading one sets both, so one pick gives the whole setup. A posture may leave the guard alone by not naming it. |
+| Sol 45 boundary | The meter fills at the end of the 1,170th running hour; Degraded's effects start the hour after. A run of exactly 45 Sols sees `ScrubberSaturated` and nothing else of hypoxia. |
+| Keeping steps green | Steps 2 to 8 change no balance: the shipped manifest stays pre-loaded with 10 crates and the smelter ships with no guard. Step 9 is the one balance commit (see *Test suite impact*). |
 | Plain-language failure causes | Deferred to milestone 8's Black Box ("smelter froze on Sol 5: card 1 shut it off at 25% power and nothing restarted it"). M6 keeps the events the Black Box will need. |
 | Playtest early | Show the orders screen (postures, guard, forecast) to one or two non-programmers at the end of M6, not only at the M8 playtest. |
 
@@ -84,11 +87,17 @@ That trigger is dropped.
 **Postures (`orders`).**
 - Each preset in `content/standing_orders.ron` gains a display `name` and a
   plain-language `summary` (one or two lines, no command syntax).
-- Shipped postures: `protect-habs` (today's three cards: the habs stay warm, the
-  smelter is given up), `caretaker` (keeps its ID, shown as *Balanced*: the habs
-  stay warm and the guarded smelter keeps working) and `max-ore` (the smelter
-  first, the habs at risk).
-- Loading one replaces the cards (the orders screen asks first if any are set).
+- A preset may also name guard settings, by module:
+  `guards: { "smelter_01": Some((pause_below_percent: 20, resume_above_percent: 50)) }`
+  (`None` clears a guard; a module left out keeps its current guard).
+- Shipped postures: `protect-habs` (today's three cards, no guard: the habs stay
+  warm, the smelter is given up), `caretaker` (keeps its ID, shown as *Balanced*:
+  the habs stay warm and the guarded smelter keeps working) and `max-ore` (the
+  smelter first, the habs at risk).
+- Loading one replaces the cards and applies its guards, through the same
+  checks as `World::add_order` and `Command::SetGuard` (the orders screen asks
+  first if any cards are set). A preset naming an unknown or unguardable
+  module fails the content check.
 
 **Forecast (new `forecast` module).**
 - `World::forecast(&self, until_sol) -> Forecast` copies the world and ticks
@@ -123,6 +132,25 @@ That trigger is dropped.
   Ground; crew effects apply only to Ground crew. The voyage catch-up already
   ticks the colony, so hypoxia during a voyage needs only a test.
 
+## Test suite impact
+
+About 300 tests today; roughly 25 change and 40 to 50 are added. Grid,
+machines, parts, `check`, RNG, hazard content, Split rules, crew stress,
+card mechanics, terminal/UI widgets and the determinism tests are untouched.
+
+| Group | Tests | What happens | When |
+| --- | --- | --- | --- |
+| Assume 10 crates aboard | `flight/tests.rs` (20), `voyage_view/tests.rs` (9), the flight tests in `gdd_invariants`, `ship.rs` (5), the dump assertion in `nexa-tools/src/slip.rs` | Load cargo explicitly through `Ship::load_crates` and the `ready()` helper. `ship.rs`'s `EmptyManifest` test flips: empty is valid, the new check is `hold_crates` | Step 3, before the manifest empties |
+| Card identity | `keying_in_the_caretaker_preset_saves_both_habs`, `orders_view/tests.rs` preset loop, the `remove_order` test in `lib.rs`, the shipped-preset tests in `orders.rs`, the `shutdown smelter_01` screen text | Re-point from `caretaker` to `protect-habs`, which keeps today's three cards | Step 2, when presets get names |
+| Shipped balance | `unattended_ash_plain_loses_both_habs_by_sol_10`, `unattended_ash_plain_breaks_the_crew`, `caretaker_orders_keep_both_habs_through_sol_10`, `caretaker_orders_keep_the_crew_calm`, gdd `caretaker_keeps_the_habs_nominal_with_no_wear_to_sol_45`, the margin-flutter test in `orders.rs`, `a_card_built_mid_run_starts_from_the_live_reading`, multi-Sol crew-screen and catch-up tests | Re-baselined on purpose; the diff is the record of the balance change. The caretaker ones move to the *Balanced* targets; the unattended and flutter ones keep their point (nobody tending the habs fails; a card without a margin chatters) on the new numbers | Step 9 only |
+| Scripts | `a_nominal` `expect crates 10`, `d_prospector` `expect crates 7` | Now check real smelter output | Step 9 |
+| Sol 45 boundary | The two 45-Sol caretaker tests | Unchanged, given the boundary decision above | Step 7 adds a test pinning it |
+| Exhaustive matches | Base log, driver, tools | New `SimEvent` / `Command` variants are compile errors, not failures | As each lands |
+| Saves | Round-trip tests | Survive (serde defaults); add a pre-M6 save fixture | Step 2 |
+
+Runtime cost is small: a forecast or a 50-Sol run is about 1,300 ticks of a
+9-module colony.
+
 ## Steps
 
 Each step ends green on test, clippy, fmt and both WASM builds, then commits.
@@ -130,34 +158,44 @@ Each step ends green on test, clippy, fmt and both WASM builds, then commits.
 1. **Docs.** Record the decisions in `docs/architecture.md` and the Standing
    Orders paragraph of `docs/game-design.md`. *(Done with this plan.)*
 2. **Content and save shape.** `ore`, `guard` and `scrubber` blocks on
-   `ModuleDef`; `hold_crates` on `ShipDef`; allow and ship an empty manifest;
-   `name` and `summary` on presets. Content checks: at most one ore producer
+   `ModuleDef`; `hold_crates` on `ShipDef`; allow an empty manifest (the
+   shipped one stays at 10 crates until step 9); `name`, `summary` and
+   `guards` on presets; add `protect-habs` as a copy of today's `caretaker` and
+   re-point the card-identity tests at it. No balance changes: the smelter
+   ships with no guard and `caretaker`'s cards are unchanged. Content checks: at most one ore producer
    and one scrubber, nonzero rates, crate mass > 0, guard thresholds ordered,
-   every preset has a name and summary. New state fields get serde defaults;
+   every preset has a name and summary, preset guards name guardable modules. New state fields get serde defaults;
    pre-M6 saves get the shipped blocks by module ID. Tests for parsing,
    rejection and old-save loading.
 3. **Fixture fallout.** A `Ship::load_crates` helper so flight tests,
    `gdd_invariants::ready()` and `ship.rs` tests start with 10 crates
    explicitly. `nexa-tools --launch` / `--sweep` default to 10 Sols under
    `caretaker`. Test that dumping is unavailable with fewer than 3 crates.
-4. **Smelter ore** (tests first): production only while running and Nominal;
-   the crate boundary; the hold cap; stockpiling while away; loading resumes
+   Behaviour is unchanged: the fixtures load the same 10 crates the shipped
+   manifest still holds.
+4. **Smelter ore** (tests first, on a test colony): production only while
+   running and Nominal; the crate boundary; the hold cap (on shipped content the
+   hold is already full, so ore only stockpiles until step 9); stockpiling while away; loading resumes
    back on the pad; determinism.
 5. **Battery guard** (tests first): pauses below and resumes above, holds
    between; never overrides a switch-off; `SetGuard` validation; runs before
    Standing Orders so a card can still override it in the same hour; saved and
-   loaded.
+   loaded; loading a posture applies its guards.
 6. **Scrubber meter.** Full exactly at tick 1170 running every hour; one hour
    earlier per dark hour; `ScrubberSaturated` once.
 7. **Hypoxia stages.** Degraded, Unconscious, Lost and the pending repair.
    Un-ignore `hypoxia_runs_degraded_then_unconscious_then_lost` (Sols 45-47, 48,
-   49). Test the stages during a voyage catch-up, and that dark hours pull them
+   49). Pin the boundary: a run of exactly 45 Sols sees `ScrubberSaturated` and
+   no hypoxia effects. Test the stages during a voyage catch-up, and that dark hours pull them
    earlier.
 8. **Autopsy and forecast.** The `Autopsy` is built at loss and kept in the
    save; `nexa-tools` prints it. `World::forecast` with tests: it leaves the
    real world untouched, matches actually running the same Sols tick for tick,
    and reports the shipped `protect-habs` posture losing the smelter on Sol 5.
-9. **Retune and postures.** Add ore, crates-by-Sol, guard pauses and scrubber
+9. **Retune and postures: the one balance commit.** Empty the shipped
+   manifest, give the smelter its shipped guard, give `caretaker` its
+   *Balanced* cards and guards, add `max-ore`, and re-baseline the shipped-balance
+   tests and the two script expectations in this same commit. Add ore, crates-by-Sol, guard pauses and scrubber
    columns to the `nexa-tools` table. Tune `kg_per_hour`, the smelter's shipped
    guard and the three postures so that, each checked by a test:
    - *Balanced* (`caretaker`) loads 10 crates by Sol 10 and keeps both habs
@@ -182,7 +220,8 @@ Each step ends green on test, clippy, fmt and both WASM builds, then commits.
     - Colony status: `ORE 640/1000 kg  CRATES 6/10  SCRUBBER 23% (34 Sols)`;
       a guard marker on a paused module; a hypoxia banner and base-log lines; a
       COLONY LOST panel with the autopsy summary.
-    - Module detail: the guard's two dials, in 5% steps.
+    - Module detail: the guard's two dials, in 5% steps. Hand-keyed posture
+      tests set the dials as well as the cards.
     - Orders screen: a posture picker first (name and summary), then the
       existing card builder under an "advanced" heading; a one-line forecast
       that updates when the cards change.
