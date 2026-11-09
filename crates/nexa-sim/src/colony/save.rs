@@ -1,6 +1,7 @@
 //! Loading a saved [`Colony`]: the unchecked wire form and what it must satisfy.
 
-use super::{Colony, Module, MAX_HEAT_LOSS_PERCENT};
+use super::content::check_blocks;
+use super::{Colony, ContentError, Module, MAX_HEAT_LOSS_PERCENT};
 use crate::grid::Grid;
 use crate::parts::Inventory;
 use nexa_types::ModuleId;
@@ -16,6 +17,9 @@ pub(super) struct RawColony {
     power_net_count: usize,
     heat_divert: Vec<Option<usize>>,
     inventory: Inventory,
+    /// Saves from before milestone 6 have no ore, and no ore or scrubber blocks.
+    #[serde(default, deserialize_with = "crate::present")]
+    ore_kg: Option<u32>,
 }
 
 /// Why a saved colony was rejected: it breaks something content loading guarantees.
@@ -31,6 +35,8 @@ pub enum SaveError {
     MachineMismatch(ModuleId),
     /// A heat diversion points at a module that isn't on that line.
     BadDiversion,
+    /// An ore, scrubber or guard block content loading would refuse.
+    Blocks(ContentError),
 }
 
 impl std::fmt::Display for SaveError {
@@ -51,6 +57,7 @@ impl std::fmt::Display for SaveError {
                 )
             }
             SaveError::BadDiversion => write!(f, "a heat diversion targets a module off its line"),
+            SaveError::Blocks(e) => write!(f, "{e}"),
         }
     }
 }
@@ -100,7 +107,7 @@ impl TryFrom<RawColony> for Colony {
                 }
             }
         }
-        Ok(Self {
+        let mut colony = Self {
             grid: raw.grid,
             ambient_centi_c: raw.ambient_centi_c,
             heat_loss_percent: raw.heat_loss_percent,
@@ -108,6 +115,12 @@ impl TryFrom<RawColony> for Colony {
             power_net_count: raw.power_net_count,
             heat_divert: raw.heat_divert,
             inventory: raw.inventory,
-        })
+            ore_kg: raw.ore_kg.unwrap_or(0),
+        };
+        if raw.ore_kg.is_none() {
+            colony.add_legacy_blocks();
+        }
+        check_blocks(colony.modules.iter().map(|m| &m.def)).map_err(SaveError::Blocks)?;
+        Ok(colony)
     }
 }

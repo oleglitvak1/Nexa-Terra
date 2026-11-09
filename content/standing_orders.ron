@@ -23,34 +23,69 @@
         temp_min_centi_c: -5000,
         temp_max_centi_c: 10000,
     ),
+    // Postures: what most players load instead of building cards. Each has a
+    // display name, a summary in plain words, its cards, and optionally battery
+    // guards by module (`guards: { "smelter_01": Some((pause_below_percent: 25,
+    // resume_above_percent: 60)) }`; `None` clears one, modules left out keep theirs).
     presets: {
         // Ash Plain, crew away: give up the smelter before the battery runs flat,
         // run both heaters and swing all line heat between the habs. The smelter
         // freezes and goes offline; both habs stay nominal.
-        "caretaker": [
-            (
-                priority: 1,
-                triggers: [PowerBelowPercent(25)],
-                actions: [Deactivate("smelter_01"), Activate("heater_02"), DivertHeat(to: "hab_01")],
-            ),
-            (
-                priority: 2,
-                triggers: [TempAbove(module: "hab_01", centi_c: 1600)],
-                actions: [DivertHeat(to: "hab_02")],
-            ),
-            (
-                priority: 2,
-                triggers: [TempAbove(module: "hab_02", centi_c: 1600)],
-                actions: [DivertHeat(to: "hab_01")],
-            ),
-        ],
+        "protect-habs": (
+            name: "Protect the habs",
+            summary: "Keeps both habs warm. When power runs low the smelter is shut down for good, so no more ore is made.",
+            cards: [
+                (
+                    priority: 1,
+                    triggers: [PowerBelowPercent(25)],
+                    actions: [Deactivate("smelter_01"), Activate("heater_02"), DivertHeat(to: "hab_01")],
+                ),
+                (
+                    priority: 2,
+                    triggers: [TempAbove(module: "hab_01", centi_c: 1600)],
+                    actions: [DivertHeat(to: "hab_02")],
+                ),
+                (
+                    priority: 2,
+                    triggers: [TempAbove(module: "hab_02", centi_c: 1600)],
+                    actions: [DivertHeat(to: "hab_01")],
+                ),
+            ],
+        ),
+        // Balanced. Milestone 6 gives it a guarded smelter that keeps working;
+        // until then it is the same three cards as Protect the habs.
+        "caretaker": (
+            name: "Balanced",
+            summary: "Keeps both habs warm and the smelter working as long as the power allows.",
+            cards: [
+                (
+                    priority: 1,
+                    triggers: [PowerBelowPercent(25)],
+                    actions: [Deactivate("smelter_01"), Activate("heater_02"), DivertHeat(to: "hab_01")],
+                ),
+                (
+                    priority: 2,
+                    triggers: [TempAbove(module: "hab_01", centi_c: 1600)],
+                    actions: [DivertHeat(to: "hab_02")],
+                ),
+                (
+                    priority: 2,
+                    triggers: [TempAbove(module: "hab_02", centi_c: 1600)],
+                    actions: [DivertHeat(to: "hab_01")],
+                ),
+            ],
+        ),
         // The example card from the design doc on its own: saves hab_01, loses hab_02.
-        "doc-example": [
-            (
-                priority: 1,
-                triggers: [PowerBelowPercent(25)],
-                actions: [Deactivate("smelter_01"), DivertHeat(to: "hab_01")],
-            ),
-        ],
+        "doc-example": (
+            name: "Design doc example",
+            summary: "One card: when power runs low, shut down the smelter and send all heat to hab 1. Hab 2 is left to freeze.",
+            cards: [
+                (
+                    priority: 1,
+                    triggers: [PowerBelowPercent(25)],
+                    actions: [Deactivate("smelter_01"), DivertHeat(to: "hab_01")],
+                ),
+            ],
+        ),
     },
 )

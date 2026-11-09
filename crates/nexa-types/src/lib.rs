@@ -124,6 +124,24 @@ impl std::fmt::Display for HazardId {
     }
 }
 
+/// A battery guard: a powered module pauses itself while its power network's
+/// stored charge is below `pause_below_percent`, and resumes once it is above
+/// `resume_above_percent`. Between the two it keeps its state, so it doesn't flutter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Guard {
+    pub pause_below_percent: u8,
+    pub resume_above_percent: u8,
+}
+
+impl Guard {
+    /// The gap between the thresholds is what stops it fluttering, and charge
+    /// never passes 100%.
+    pub fn is_valid(self) -> bool {
+        self.pause_below_percent < self.resume_above_percent && self.resume_above_percent <= 100
+    }
+}
+
 /// Something the player (or a Standing Order) asks the colony to do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
@@ -183,6 +201,19 @@ mod tests {
     #[test]
     fn tick_displays_as_a_log_stamp() {
         assert_eq!(Tick(27).to_string(), "S001 H01");
+    }
+
+    #[test]
+    fn a_guard_needs_a_gap_and_must_resume_by_full_charge() {
+        let guard = |pause_below_percent, resume_above_percent| Guard {
+            pause_below_percent,
+            resume_above_percent,
+        };
+        assert!(guard(25, 60).is_valid());
+        assert!(guard(0, 100).is_valid());
+        assert!(!guard(40, 40).is_valid());
+        assert!(!guard(60, 25).is_valid());
+        assert!(!guard(50, 101).is_valid());
     }
 
     #[test]

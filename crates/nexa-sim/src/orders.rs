@@ -7,7 +7,7 @@
 
 use crate::colony::Colony;
 use crate::SimEvent;
-use nexa_types::{Command, ModuleId, CENTI_PER_DEGREE};
+use nexa_types::{Command, Guard, ModuleId, CENTI_PER_DEGREE};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
@@ -77,22 +77,93 @@ pub struct EditorTuning {
     pub temp_max_centi_c: i32,
 }
 
+/// A posture: a named starter set of cards, and battery guards to go with them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Preset {
+    /// Display name, e.g. "Balanced".
+    pub name: String,
+    /// What it does, in plain words with no command syntax.
+    pub summary: String,
+    pub cards: Vec<StandingOrder>,
+    /// Guards to set by module; `None` clears one. Modules left out keep theirs.
+    #[serde(default)]
+    pub guards: BTreeMap<ModuleId, Option<Guard>>,
+}
+
+impl Preset {
+    /// Whether every card and guard fits this colony.
+    pub fn check(&self, colony: &Colony, tuning: OrderTuning) -> Result<(), PresetError> {
+        let mut orders = Orders::new(tuning);
+        for card in &self.cards {
+            orders
+                .add(card.clone(), colony)
+                .map_err(PresetError::Card)?;
+        }
+        for (id, guard) in &self.guards {
+            if let Some(guard) = guard {
+                colony.check_guard(id, *guard).map_err(PresetError::Guard)?;
+            } else if colony.module(id).is_none() {
+                return Err(PresetError::Guard(
+                    crate::colony::CommandError::UnknownModule(id.clone()),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why a posture doesn't fit a colony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PresetError {
+    Card(OrderError),
+    Guard(crate::colony::CommandError),
+}
+
+impl std::fmt::Display for PresetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PresetError::Card(e) => write!(f, "{e}"),
+            PresetError::Guard(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for PresetError {}
+
 /// The Standing Orders content file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrdersDef {
     pub tuning: OrderTuning,
     pub editor: EditorTuning,
-    /// Named starter card sets, e.g. `caretaker`.
+    /// Postures by ID, e.g. `caretaker`.
     #[serde(default)]
-    pub presets: BTreeMap<String, Vec<StandingOrder>>,
+    pub presets: BTreeMap<String, Preset>,
 }
 
 /// Shipped tuning and presets, compiled in so loading needs no file I/O.
 pub const STANDING_ORDERS: &str = include_str!("../../../content/standing_orders.ron");
 
 impl OrdersDef {
+    /// Parse, and check what needs no colony: every posture is named and
+    /// summarised, and its guards' thresholds are ordered.
     pub fn from_ron(text: &str) -> Result<Self, String> {
-        ron::from_str(text).map_err(|e| e.to_string())
+        let def: Self = ron::from_str(text).map_err(|e| e.to_string())?;
+        for (id, preset) in &def.presets {
+            if preset.name.trim().is_empty() || preset.summary.trim().is_empty() {
+                return Err(format!("preset {id} needs a name and a summary"));
+            }
+            if let Some(module) = preset
+                .guards
+                .iter()
+                .find_map(|(m, g)| g.filter(|g| !g.is_valid()).map(|_| m))
+            {
+                return Err(format!(
+                    "preset {id}: the guard on {module} must pause below resume, and resume by 100%"
+                ));
+            }
+        }
+        Ok(def)
     }
 
     /// Parsed once: every new [`Orders`] and every pre-orders save reads the tuning.
@@ -486,7 +557,7 @@ pub fn format_centi_c(centi_c: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::colony::LANDING_ASH_PLAIN;
+    use crate::colony::{CommandError, LANDING_ASH_PLAIN};
     use crate::machines::MachineState;
     use crate::World;
 
@@ -592,16 +663,66 @@ mod tests {
     fn shipped_content_loads_and_every_preset_fits_the_ash_plain() {
         let def = OrdersDef::shipped();
         assert!(def.tuning.memory >= 3);
-        assert!(def.presets.contains_key("caretaker"));
-        let colony = ash_plain();
-        for (name, cards) in &def.presets {
-            let mut orders = Orders::new(def.tuning);
-            for order in cards {
-                orders
-                    .add(order.clone(), &colony)
-                    .unwrap_or_else(|e| panic!("preset {name}: {e}"));
-            }
+        for id in ["caretaker", "protect-habs"] {
+            assert!(def.presets.contains_key(id), "{id}");
         }
+        let colony = ash_plain();
+        for (id, preset) in &def.presets {
+            preset
+                .check(&colony, def.tuning)
+                .unwrap_or_else(|e| panic!("preset {id}: {e}"));
+        }
+    }
+
+    #[test]
+    fn protect_habs_is_the_three_card_caretaker() {
+        let presets = &OrdersDef::shipped().presets;
+        let protect = &presets["protect-habs"];
+        assert_eq!(protect.cards.len(), 3);
+        assert!(protect.guards.is_empty());
+        // Until milestone 6 retunes Balanced, the two are the same cards.
+        assert_eq!(protect.cards, presets["caretaker"].cards);
+    }
+
+    #[test]
+    fn postures_need_a_name_a_summary_and_ordered_guards() {
+        let unnamed = STANDING_ORDERS.replacen("name: \"Balanced\"", "name: \" \"", 1);
+        assert_ne!(unnamed, STANDING_ORDERS);
+        assert!(OrdersDef::from_ron(&unnamed).is_err());
+
+        let guarded = STANDING_ORDERS.replacen(
+            "cards: [",
+            "guards: { \"smelter_01\": Some((pause_below_percent: 60, resume_above_percent: 25)) },\n            cards: [",
+            1,
+        );
+        assert!(OrdersDef::from_ron(&guarded)
+            .unwrap_err()
+            .contains("smelter_01"));
+    }
+
+    #[test]
+    fn a_posture_s_guards_must_fit_the_colony() {
+        let colony = ash_plain();
+        let tuning = OrdersDef::shipped().tuning;
+        let mut preset = OrdersDef::shipped().presets["protect-habs"].clone();
+        let guard = Guard {
+            pause_below_percent: 25,
+            resume_above_percent: 60,
+        };
+        preset.guards.insert(id("smelter_01"), Some(guard));
+        assert_eq!(preset.check(&colony, tuning), Ok(()));
+        preset.guards.insert(id("ghost"), None);
+        assert!(matches!(
+            preset.check(&colony, tuning),
+            Err(PresetError::Guard(CommandError::UnknownModule(_)))
+        ));
+        preset.guards.clear();
+        // The generator draws nothing, so there is nothing to guard.
+        preset.guards.insert(id("gen_01"), Some(guard));
+        assert_eq!(
+            preset.check(&colony, tuning),
+            Err(PresetError::Guard(CommandError::Unguardable(id("gen_01"))))
+        );
     }
 
     #[test]
@@ -612,7 +733,7 @@ mod tests {
         assert!((1..=100).contains(&e.power_start_percent));
         assert!(e.power_step_percent >= 1 && e.temp_step_centi_c >= 1);
         assert!(e.temp_min_centi_c < e.temp_max_centi_c);
-        for card in def.presets.values().flatten() {
+        for card in def.presets.values().flat_map(|p| &p.cards) {
             assert!((1..=e.priority_max).contains(&card.priority));
             for trigger in &card.triggers {
                 if let Trigger::TempBelow { centi_c, .. } | Trigger::TempAbove { centi_c, .. } =

@@ -165,12 +165,12 @@ impl Session {
     }
 }
 
-fn caretaker() -> Vec<StandingOrder> {
-    OrdersDef::shipped().presets["caretaker"].clone()
+fn protect_habs() -> Vec<StandingOrder> {
+    OrdersDef::shipped().presets["protect-habs"].cards.clone()
 }
 
-/// Key in the shipped caretaker preset by hand.
-fn key_in_caretaker(s: &mut Session) {
+/// Key in the shipped Protect the habs posture by hand.
+fn key_in_protect_habs(s: &mut Session) {
     s.press(&[KeyCode::N]);
     s.power_trigger(25);
     s.action(ActionKind::Shutdown, "smelter_01");
@@ -188,12 +188,12 @@ fn key_in_caretaker(s: &mut Session) {
 }
 
 #[test]
-fn keying_in_the_caretaker_preset_saves_both_habs() {
+fn keying_in_the_protect_habs_preset_saves_both_habs() {
     let mut s = Session::new(World::landfall());
-    key_in_caretaker(&mut s);
+    key_in_protect_habs(&mut s);
     assert_eq!(
         s.world.orders.iter().cloned().collect::<Vec<_>>(),
-        caretaker()
+        protect_habs()
     );
     assert_eq!(s.editor.message.as_deref(), Some("CARD 3 STORED"));
 
@@ -358,12 +358,12 @@ fn unbound_keys_change_nothing_at_any_step() {
 #[test]
 fn deleting_every_card_then_one_more() {
     let mut s = Session::new(World::landfall());
-    key_in_caretaker(&mut s);
+    key_in_protect_habs(&mut s);
     // The cursor sits on the card just stored.
     assert_eq!(s.editor.list.cursor(), 2);
     s.press(&[KeyCode::Up, KeyCode::D, KeyCode::D]);
     assert_eq!(s.editor.message.as_deref(), Some("CARD 2 DELETED"));
-    assert_eq!(s.world.orders.get(1), Some(&caretaker()[2]));
+    assert_eq!(s.world.orders.get(1), Some(&protect_habs()[2]));
     s.press(&[KeyCode::D, KeyCode::D, KeyCode::Delete, KeyCode::Delete]);
     assert!(s.world.orders.is_empty());
     let message = s.editor.message.clone();
@@ -495,7 +495,7 @@ fn power_steps_by_one_below_the_first_step() {
 #[test]
 fn delete_asks_first_and_any_other_key_cancels() {
     let mut s = Session::new(World::landfall());
-    key_in_caretaker(&mut s);
+    key_in_protect_habs(&mut s);
     s.press(&[KeyCode::D]);
     assert_eq!(s.world.orders.len(), 3);
     assert_eq!(
@@ -512,7 +512,7 @@ fn delete_asks_first_and_any_other_key_cancels() {
     assert_eq!(s.world.orders.len(), 3);
     s.press(&[KeyCode::D]);
     assert_eq!(s.world.orders.len(), 2);
-    assert_eq!(s.world.orders.get(1), Some(&caretaker()[2]));
+    assert_eq!(s.world.orders.get(1), Some(&protect_habs()[2]));
 }
 
 #[test]
