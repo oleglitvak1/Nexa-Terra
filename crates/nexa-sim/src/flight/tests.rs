@@ -599,7 +599,7 @@ fn arrival_runs_the_colony_through_every_sol_flown() {
 #[test]
 fn standing_orders_run_while_the_ship_is_away() {
     let mut world = crewed(2);
-    for order in &crate::orders::OrdersDef::shipped().presets["caretaker"] {
+    for order in &crate::orders::OrdersDef::shipped().presets["protect-habs"].cards {
         world.add_order(order.clone()).unwrap();
     }
     world.launch(&mut OfflineUniverse::default()).unwrap();

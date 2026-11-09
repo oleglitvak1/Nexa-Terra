@@ -170,9 +170,9 @@ fn backspace_undoes_the_last_part_and_priority_stays_in_range() {
     assert_eq!(order.priority, tuning().priority_max);
 }
 
-fn with_caretaker() -> World {
+fn with_protect_habs() -> World {
     let mut world = World::landfall();
-    for order in &OrdersDef::shipped().presets["caretaker"] {
+    for order in &OrdersDef::shipped().presets["protect-habs"].cards {
         world.add_order(order.clone()).unwrap();
     }
     world
@@ -180,7 +180,7 @@ fn with_caretaker() -> World {
 
 #[test]
 fn delete_removes_the_selected_card() {
-    let mut world = with_caretaker();
+    let mut world = with_protect_habs();
     let mut editor = OrdersEditor::new();
     let last = world.orders.get(2).unwrap().clone();
     press(
@@ -209,7 +209,7 @@ fn escape_discards_a_draft_then_closes_the_terminal() {
 
 #[test]
 fn a_full_terminal_refuses_a_new_card() {
-    let mut world = with_caretaker();
+    let mut world = with_protect_habs();
     let card = world.orders.get(0).unwrap().clone();
     while world.add_order(card.clone()).is_ok() {}
     let mut editor = OrdersEditor::new();
@@ -223,7 +223,7 @@ fn a_full_terminal_refuses_a_new_card() {
 
 #[test]
 fn the_list_shows_every_card_with_its_slot_and_priority() {
-    let world = with_caretaker();
+    let world = with_protect_habs();
     let screen = screen_text(&OrdersEditor::new(), &world);
     assert!(screen.contains("MEMORY 3/8"));
     assert!(screen.contains("> 1 P1 IF grid.power < 25% THEN shutdown smelter_01"));

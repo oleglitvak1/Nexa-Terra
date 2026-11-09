@@ -157,7 +157,7 @@ Each step ends green on test, clippy, fmt and both WASM builds, then commits.
 
 1. **Docs.** Record the decisions in `docs/architecture.md` and the Standing
    Orders paragraph of `docs/game-design.md`. *(Done with this plan.)*
-2. **Content and save shape.** `ore`, `guard` and `scrubber` blocks on
+2. **Content and save shape.** *(Done.)* `ore`, `guard` and `scrubber` blocks on
    `ModuleDef`; `hold_crates` on `ShipDef`; allow an empty manifest (the
    shipped one stays at 10 crates until step 9); `name`, `summary` and
    `guards` on presets; add `protect-habs` as a copy of today's `caretaker` and

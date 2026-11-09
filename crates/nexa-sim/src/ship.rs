@@ -13,6 +13,13 @@ pub const MULLEIN: &str = include_str!("../../../content/mullein.ron");
 /// Cargo integrity is a whole percent, 0..=MAX_INTEGRITY_PCT.
 pub const MAX_INTEGRITY_PCT: u8 = 100;
 
+/// The hold of a ship saved before holds had a size: the shipped Mullein's.
+const LEGACY_HOLD_CRATES: u8 = 10;
+
+fn legacy_hold_crates() -> u8 {
+    LEGACY_HOLD_CRATES
+}
+
 /// One crate in the hold.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,7 +58,10 @@ pub struct ShipDef {
     /// The colony's credits at landfall.
     pub starting_credits: u32,
     pub route: RouteDef,
-    /// The outbound load.
+    /// Crates the hold takes.
+    #[serde(default = "legacy_hold_crates")]
+    pub hold_crates: u8,
+    /// Crates aboard at landfall; may be empty, since the smelter fills the hold.
     pub manifest: Vec<OreCrate>,
 }
 
@@ -71,7 +81,13 @@ pub enum ShipError {
         liters: u32,
     },
     NoTransit,
-    EmptyManifest,
+    /// A hold that takes no crates.
+    NoHold,
+    /// More crates aboard than the hold takes.
+    HoldOverfull {
+        crates: usize,
+        hold: u8,
+    },
     DuplicateCrate(String),
     WeightlessCrate(String),
     IntegrityTooHigh(String),
@@ -93,7 +109,10 @@ impl std::fmt::Display for ShipError {
                 write!(f, "{field} is {liters} L, expected 1 L up to a full tank")
             }
             ShipError::NoTransit => write!(f, "the route takes no Sols"),
-            ShipError::EmptyManifest => write!(f, "the manifest is empty"),
+            ShipError::NoHold => write!(f, "the hold takes no crates"),
+            ShipError::HoldOverfull { crates, hold } => {
+                write!(f, "{crates} crates in a {hold}-crate hold")
+            }
             ShipError::DuplicateCrate(id) => write!(f, "crate {id} is listed twice"),
             ShipError::WeightlessCrate(id) => write!(f, "crate {id} has no mass"),
             ShipError::IntegrityTooHigh(id) => {
@@ -107,7 +126,13 @@ impl std::fmt::Display for ShipError {
 
 impl std::error::Error for ShipError {}
 
-fn check_crates(crates: &[OreCrate]) -> Result<(), ShipError> {
+fn check_crates(crates: &[OreCrate], hold: u8) -> Result<(), ShipError> {
+    if crates.len() > usize::from(hold) {
+        return Err(ShipError::HoldOverfull {
+            crates: crates.len(),
+            hold,
+        });
+    }
     for (i, c) in crates.iter().enumerate() {
         if crates[..i].iter().any(|other| other.id == c.id) {
             return Err(ShipError::DuplicateCrate(c.id.clone()));
@@ -161,10 +186,10 @@ impl ShipDef {
         if self.route.transit_sols == 0 {
             return Err(ShipError::NoTransit);
         }
-        if self.manifest.is_empty() {
-            return Err(ShipError::EmptyManifest);
+        if self.hold_crates == 0 {
+            return Err(ShipError::NoHold);
         }
-        check_crates(&self.manifest)
+        check_crates(&self.manifest, self.hold_crates)
     }
 }
 
@@ -282,7 +307,7 @@ impl Ship {
         if self.pods > self.def.ecm_pods {
             return Err(ShipError::TooManyPods(self.pods));
         }
-        check_crates(&self.cargo)
+        check_crates(&self.cargo, self.def.hold_crates)
     }
 }
 
@@ -319,7 +344,7 @@ mod tests {
     #[test]
     fn bad_ship_content_is_refused() {
         type Bend = fn(&mut ShipDef);
-        let cases: [(Bend, ShipError); 8] = [
+        let cases: [(Bend, ShipError); 9] = [
             (|d| d.tank_l = 0, ShipError::EmptyTank),
             (
                 |d| d.start_fuel_l = 1001,
@@ -336,7 +361,14 @@ mod tests {
                 },
             ),
             (|d| d.route.transit_sols = 0, ShipError::NoTransit),
-            (|d| d.manifest.clear(), ShipError::EmptyManifest),
+            (|d| d.hold_crates = 0, ShipError::NoHold),
+            (
+                |d| d.hold_crates = 9,
+                ShipError::HoldOverfull {
+                    crates: 10,
+                    hold: 9,
+                },
+            ),
             (
                 |d| d.manifest[1].id = d.manifest[0].id.clone(),
                 ShipError::DuplicateCrate("crate_01".into()),
@@ -355,6 +387,25 @@ mod tests {
             bend(&mut def);
             assert_eq!(def.check(), Err(err));
         }
+    }
+
+    #[test]
+    fn an_empty_hold_is_valid_content() {
+        let mut def = shipped();
+        assert_eq!(def.hold_crates, 10);
+        def.manifest.clear();
+        assert_eq!(def.check(), Ok(()));
+        let ship = Ship::new(def);
+        assert_eq!((ship.cargo_mass_kg(), ship.cargo_integrity_pct()), (0, 0));
+    }
+
+    #[test]
+    fn ships_saved_before_holds_had_a_size_get_the_mullein_s() {
+        let saved = ron::to_string(&Ship::default()).unwrap();
+        let old = saved.replacen("hold_crates:10,", "", 1);
+        assert_ne!(old, saved, "hold format changed: {saved}");
+        let loaded: Ship = ron::from_str(&old).unwrap();
+        assert_eq!(loaded, Ship::default());
     }
 
     #[test]

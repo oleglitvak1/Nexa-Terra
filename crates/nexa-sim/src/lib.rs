@@ -78,8 +78,8 @@ struct RawWorld {
     voyage: Option<Voyage>,
 }
 
-/// Reads a field that `World` writes bare, not as an RON `Some(..)`.
-fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+/// Reads a field a save writes bare, not as an RON `Some(..)`.
+pub(crate) fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -336,7 +336,7 @@ mod tests {
 
     fn with_preset(name: &str) -> World {
         let mut world = World::landfall();
-        for order in &OrdersDef::shipped().presets[name] {
+        for order in &OrdersDef::shipped().presets[name].cards {
             world.add_order(order.clone()).unwrap();
         }
         world
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn orders_and_their_firing_state_survive_a_save() {
-        let mut world = with_preset("caretaker");
+        let mut world = with_preset("protect-habs");
         // Mid-run, so some cards are disarmed and a heat diversion is live.
         run_sols(&mut world, 3);
         let saved = ron::to_string(&world).unwrap();
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn a_save_with_a_bad_card_is_rejected() {
-        let world = with_preset("caretaker");
+        let world = with_preset("protect-habs");
         let saved = ron::to_string(&world).unwrap();
         let ghost = saved.replace("\"hab_02\")", "\"ghost\")");
         assert_ne!(ghost, saved);
@@ -391,10 +391,10 @@ mod tests {
 
     #[test]
     fn removing_an_order_moves_later_cards_up() {
-        let mut world = with_preset("caretaker");
+        let mut world = with_preset("protect-habs");
         let third = world.orders.get(2).unwrap().clone();
         let first = world.remove_order(0).unwrap();
-        assert_eq!(first, OrdersDef::shipped().presets["caretaker"][0]);
+        assert_eq!(first, OrdersDef::shipped().presets["protect-habs"].cards[0]);
         assert_eq!(world.orders.len(), 2);
         assert_eq!(world.orders.get(1), Some(&third));
         assert_eq!(world.remove_order(2), Err(OrderError::NoSuchSlot(2)));

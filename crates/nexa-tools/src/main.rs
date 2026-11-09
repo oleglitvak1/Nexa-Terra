@@ -161,16 +161,13 @@ fn main() {
         None => World::landfall(),
     };
     if let Some(name) = &preset {
-        let def = OrdersDef::shipped();
-        let Some(cards) = def.presets.get(name) else {
-            usage(&format!("no preset named {name:?}"));
-        };
-        for order in cards {
-            if let Err(e) = world.add_order(order.clone()) {
-                usage(&format!("preset {name:?}: {e}"));
-            }
+        if let Err(e) = nexa_sim::script::load_preset(&mut world, name) {
+            usage(&e.to_string());
         }
-        println!("[SIM] standing orders: {name}");
+        println!(
+            "[SIM] standing orders: {name} ({})",
+            OrdersDef::shipped().presets[name].name
+        );
         for (slot, order) in world.orders.iter().enumerate() {
             println!(
                 "[SIM]   {} P{} {}",

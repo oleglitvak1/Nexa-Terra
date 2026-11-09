@@ -52,7 +52,11 @@
     modules: [
         (id: "gen_01", glyph: 'G', output_kw: 30),
         (id: "bat_01", glyph: 'B', battery: Some((capacity_kwh: 400, charge_kwh: 300))),
-        (id: "scrubber_01", glyph: 'O', draw_kw: 5),
+        (
+            id: "scrubber_01", glyph: 'O', draw_kw: 5,
+            // Full on Sol 45 (45 x 26 hours) if it runs every hour; a dark hour counts double.
+            scrubber: Some((capacity: 1170, per_running_hour: 1, per_dark_hour: 2)),
+        ),
         (
             id: "hab_01", kind: Hab, glyph: 'H', draw_kw: 3, start_temp_centi_c: Some(1400),
             // Hard landing: the seal is already 40% worn.
@@ -78,6 +82,8 @@
                 tolerance: (min_centi_c: -500, max_centi_c: 8000),
                 wear_bp_per_hour: 130,
             )),
+            // Made only while Nominal. First-pass rate; retuned in milestone 6 step 9.
+            ore: Some((kg_per_hour: 50, crate_kg: 1000, cargo: "raw silicon")),
         ),
     ],
     parts: { VitonSeal: 2, TungstenFilament: 1 },

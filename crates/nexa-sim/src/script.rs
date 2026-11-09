@@ -324,11 +324,17 @@ pub fn start(lines: &[Line]) -> World {
 
 /// Load a Standing Orders preset; refused if it doesn't exist or doesn't fit.
 pub fn load_preset(world: &mut World, name: &str) -> Result<(), RunError> {
-    let cards = OrdersDef::shipped()
+    let def = OrdersDef::shipped();
+    let preset = def
         .presets
         .get(name)
         .ok_or_else(|| RunError::Refused(format!("no preset named {name:?}")))?;
-    for card in cards {
+    // Guards are checked here but applied once modules keep a guard setting
+    // (milestone 6, step 5); no shipped posture names one before then.
+    preset
+        .check(&world.colony, def.tuning)
+        .map_err(|e| RunError::Refused(format!("preset {name}: {e}")))?;
+    for card in &preset.cards {
         world
             .add_order(card.clone())
             .map_err(|e| RunError::Refused(format!("preset {name}: {e}")))?;

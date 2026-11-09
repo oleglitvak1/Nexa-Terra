@@ -3,14 +3,16 @@
 mod content;
 mod save;
 
-pub use content::{BatteryDef, ColonyDef, ContentError, MachineDef, ModuleDef, ModuleKind};
+pub use content::{
+    BatteryDef, ColonyDef, ContentError, MachineDef, ModuleDef, ModuleKind, OreDef, ScrubberDef,
+};
 pub use save::SaveError;
 
 use crate::grid::Grid;
 use crate::machines::Machine;
 use crate::parts::{Inventory, PartKind};
 use crate::SimEvent;
-use nexa_types::{Command, ModuleId};
+use nexa_types::{Command, Guard, ModuleId};
 use save::RawColony;
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +84,8 @@ pub struct Colony {
     /// Per heat network: the one module all its heat goes to, if diverted.
     heat_divert: Vec<Option<usize>>,
     inventory: Inventory,
+    /// Smelted ore not yet packed into a crate, in whole kg.
+    ore_kg: u32,
 }
 
 impl Colony {
@@ -101,6 +105,39 @@ impl Colony {
                 m.def.kind = ModuleKind::Hab;
             }
         }
+    }
+
+    /// Pre-milestone-6 saves kept module defs with no ore, scrubber or guard
+    /// blocks; give modules the shipped landing site's blocks by ID.
+    pub(crate) fn add_legacy_blocks(&mut self) {
+        let shipped = ColonyDef::shipped();
+        for m in &mut self.modules {
+            let Some(s) = shipped.modules.iter().find(|s| s.id == m.def.id) else {
+                continue;
+            };
+            m.def.ore = m.def.ore.take().or_else(|| s.ore.clone());
+            m.def.scrubber = m.def.scrubber.or(s.scrubber);
+            m.def.guard = m.def.guard.or(s.guard);
+        }
+    }
+
+    pub fn ore_kg(&self) -> u32 {
+        self.ore_kg
+    }
+
+    /// Whether `guard` may be set on this module: it exists, draws power,
+    /// and the thresholds are ordered.
+    pub fn check_guard(&self, id: &ModuleId, guard: Guard) -> Result<(), CommandError> {
+        let module = self
+            .module(id)
+            .ok_or_else(|| CommandError::UnknownModule(id.clone()))?;
+        if module.def.draw_kw == 0 {
+            return Err(CommandError::Unguardable(id.clone()));
+        }
+        if !guard.is_valid() {
+            return Err(CommandError::BadGuard(guard));
+        }
+        Ok(())
     }
 
     pub fn module(&self, id: &ModuleId) -> Option<&Module> {
@@ -132,6 +169,10 @@ pub enum CommandError {
     NotOnHeatLine(ModuleId),
     NotFailed(ModuleId),
     MissingPart(PartKind),
+    /// Draws no power, so a battery guard would do nothing.
+    Unguardable(ModuleId),
+    /// Pause at or above resume, or resume above 100%.
+    BadGuard(Guard),
 }
 
 impl std::fmt::Display for CommandError {
@@ -141,6 +182,12 @@ impl std::fmt::Display for CommandError {
             CommandError::NotOnHeatLine(id) => write!(f, "{id} is not on a heat line"),
             CommandError::NotFailed(id) => write!(f, "{id} has not failed"),
             CommandError::MissingPart(part) => write!(f, "no {part:?} in stock"),
+            CommandError::Unguardable(id) => write!(f, "{id} draws no power to guard"),
+            CommandError::BadGuard(g) => write!(
+                f,
+                "a guard must pause below {}% < resume above {}% <= 100%",
+                g.pause_below_percent, g.resume_above_percent
+            ),
         }
     }
 }
@@ -541,6 +588,177 @@ mod tests {
         let saved = ron::to_string(c).unwrap();
         assert!(saved.contains(from), "{from} not in save");
         ron::from_str(&saved.replacen(from, to, 1))
+    }
+
+    #[test]
+    fn shipped_landing_site_has_one_ore_smelter_and_one_scrubber() {
+        let c = ash_plain();
+        let ore = c.module(&id("smelter_01")).unwrap().def().ore.clone();
+        let ore = ore.expect("the smelter makes ore");
+        assert_eq!((ore.crate_kg, ore.cargo.as_str()), (1000, "raw silicon"));
+        let scrubber = c.module(&id("scrubber_01")).unwrap().def().scrubber;
+        // Full on Sol 45 when it runs every hour.
+        assert_eq!(
+            u64::from(scrubber.expect("scrubber_01 has a meter").capacity),
+            45 * nexa_types::TICKS_PER_SOL
+        );
+        // No balance change until the retune: nothing ships guarded.
+        assert!(c.modules().iter().all(|m| m.def().guard.is_none()));
+        assert_eq!(c.ore_kg(), 0);
+    }
+
+    #[test]
+    fn bad_ore_scrubber_and_guard_blocks_are_refused() {
+        let ore = |kg_per_hour| {
+            Some(OreDef {
+                kg_per_hour,
+                crate_kg: 1000,
+                cargo: "raw silicon".into(),
+            })
+        };
+        let machine = Some(MachineDef {
+            tolerance: crate::machines::ToleranceBand::new(500, 3000),
+            wear_bp_per_hour: 100,
+            start_wear_bp: 0,
+        });
+        let scrubber = |per_dark_hour| {
+            Some(ScrubberDef {
+                capacity: 100,
+                per_running_hour: 2,
+                per_dark_hour,
+            })
+        };
+        let guard = |pause_below_percent| {
+            Some(Guard {
+                pause_below_percent,
+                resume_above_percent: 60,
+            })
+        };
+        // tiny()'s generator draws nothing; its hab draws 2 kW.
+        let valid = || {
+            let mut def = tiny();
+            let hab = &mut def.modules[1];
+            hab.machine = machine;
+            hab.ore = ore(50);
+            hab.scrubber = scrubber(2);
+            hab.guard = guard(25);
+            def
+        };
+        assert!(Colony::from_def(valid()).is_ok());
+
+        type Bend = Box<dyn Fn(&mut ColonyDef)>;
+        let cases: Vec<(Bend, ContentError)> = vec![
+            (
+                Box::new(|d| d.modules[1].machine = None),
+                ContentError::BadOre(id("hab")),
+            ),
+            (
+                Box::new(move |d| d.modules[1].ore = ore(0)),
+                ContentError::BadOre(id("hab")),
+            ),
+            (
+                Box::new(move |d| {
+                    d.modules[0].machine = machine;
+                    d.modules[0].ore = ore(10);
+                }),
+                ContentError::TwoOreProducers(id("hab")),
+            ),
+            (
+                Box::new(move |d| d.modules[1].scrubber = scrubber(1)),
+                ContentError::BadScrubber(id("hab")),
+            ),
+            (
+                Box::new(move |d| d.modules[0].scrubber = scrubber(2)),
+                ContentError::BadScrubber(id("gen")),
+            ),
+            (
+                Box::new(move |d| {
+                    d.modules[0].draw_kw = 1;
+                    d.modules[0].scrubber = scrubber(2);
+                }),
+                ContentError::TwoScrubbers(id("hab")),
+            ),
+            (
+                Box::new(move |d| d.modules[1].guard = guard(60)),
+                ContentError::BadGuard(id("hab")),
+            ),
+            (
+                Box::new(move |d| d.modules[0].guard = guard(25)),
+                ContentError::BadGuard(id("gen")),
+            ),
+        ];
+        for (bend, err) in cases {
+            let mut def = valid();
+            bend(&mut def);
+            assert_eq!(Colony::from_def(def), Err(err));
+        }
+    }
+
+    #[test]
+    fn a_guard_fits_only_a_module_that_draws_power() {
+        let c = ash_plain();
+        let guard = Guard {
+            pause_below_percent: 25,
+            resume_above_percent: 60,
+        };
+        assert_eq!(c.check_guard(&id("smelter_01"), guard), Ok(()));
+        assert_eq!(
+            c.check_guard(&id("gen_01"), guard),
+            Err(CommandError::Unguardable(id("gen_01")))
+        );
+        assert_eq!(
+            c.check_guard(&id("ghost"), guard),
+            Err(CommandError::UnknownModule(id("ghost")))
+        );
+        let backwards = Guard {
+            pause_below_percent: 60,
+            resume_above_percent: 25,
+        };
+        assert_eq!(
+            c.check_guard(&id("smelter_01"), backwards),
+            Err(CommandError::BadGuard(backwards))
+        );
+    }
+
+    /// A save written before milestone 6: no ore stockpile, no ore or scrubber blocks.
+    fn pre_m6_save(c: &Colony) -> String {
+        let saved = ron::to_string(c).unwrap();
+        let old = saved
+            .replacen(
+                ",ore:Some((kg_per_hour:50,crate_kg:1000,cargo:\"raw silicon\"))",
+                "",
+                1,
+            )
+            .replacen(
+                ",scrubber:Some((capacity:1170,per_running_hour:1,per_dark_hour:2))",
+                "",
+                1,
+            )
+            .replacen(",ore_kg:0", "", 1);
+        for gone in ["ore:", "scrubber:", "ore_kg:"] {
+            assert!(!old.contains(gone), "{gone} format changed: {saved}");
+        }
+        old
+    }
+
+    #[test]
+    fn saves_from_before_milestone_6_get_the_shipped_blocks() {
+        let c = ash_plain();
+        let loaded: Colony = ron::from_str(&pre_m6_save(&c)).unwrap();
+        assert_eq!(loaded, c);
+    }
+
+    #[test]
+    fn a_current_save_without_blocks_gains_none() {
+        let c = Colony::from_def(tiny()).unwrap();
+        assert_eq!(reload_with(&c, "(", "(").unwrap(), c);
+    }
+
+    #[test]
+    fn saves_with_a_bad_block_are_rejected() {
+        let c = ash_plain();
+        assert!(reload_with(&c, "per_dark_hour:2", "per_dark_hour:0").is_err());
+        assert!(reload_with(&c, "kg_per_hour:50", "kg_per_hour:0").is_err());
     }
 
     #[test]
