@@ -95,7 +95,7 @@ The universe is reached only at the sync points (launch now, docking with Scrap 
 | Module | Owns | Key types |
 | --- | --- | --- |
 | `grid` | Tile map parsed from the landing content; conduit and heat-line networks | `Grid`, `Tile`, `Networks` |
-| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step (milestone 6 adds smelter ore output and scrubber saturation) | `Colony`, `ColonyDef`, `Module`, `ModuleDef`, `ModuleKind` (Utility, Hab) |
+| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step (milestone 6 adds smelter ore output and the ore stockpile) | `Colony`, `ColonyDef`, `Module`, `ModuleDef`, `ModuleKind` (Utility, Hab) |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
 | `check` | The one skill-check function every hazard (and later haggle) uses | `check()`, `CheckDef`, `CheckTuning`, `Roll`, `Outcome` (Success, Partial, Fail) |
@@ -108,6 +108,7 @@ The universe is reached only at the sync points (launch now, docking with Scrap 
 | `script` | Playthrough scripts: parse `.nts` lines and run them headless | `Step`, `Expect`, `Line`, `RunError` |
 | `station` (*planned*) | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
 | `echoes` (*planned*) | Logged moral choices and their delayed payoffs | `EchoSeed`, `EchoTrigger` |
+| `life_support` (*planned*, milestone 6) | Scrubber saturation meter, O2 candles, Base Hypoxia stages, the autopsy record | `Scrubber`, `HypoxiaStage` (None, Degraded, Unconscious, Lost), `Autopsy` |
 | `epochs` (*planned*) | Atmosphere state and epoch milestones | `Atmosphere` (pressure, temp, toxicity, water), `Epoch` |
 | `blackbox` (*planned*) | Log of everything that happened while the crew was away | `LogEntry`, `Reconciliation` |
 | `rng` | The only source of randomness | `SimRng` (SplitMix64: seeded, serializable, no extra crate) |
@@ -118,11 +119,11 @@ The universe is reached only at the sync points (launch now, docking with Scrap 
 - **Heat (cold pull + heat lines).** Running modules pour heat into their heat line's pool, shared evenly among the line's working (not failed) machines, or sent entirely to one module when the player diverts heat (`DivertHeat`). Then every module loses a fixed percentage of its gap to the outside temperature. A module off any heat line keeps its own heat.
 - **Wear meter.** A machine gains wear (basis points per hour) only while out of its tolerance band. At 100% it fails: Overheat becomes Burnout, Freeze becomes Offline. A failed machine draws no power and makes no heat. A repair uses one part (Burnout: Tungsten Heating Filament; Offline: Viton Seal) and resets wear to 0.
 
-**Colony gaps (milestone 6, decided, not built).** Three rules turn the 45-Sol deadline and the trade cargo into sim state. There is no oxygen network on the grid: the scrubber is a meter, not a flow.
+**Colony gaps (milestone 6, decided, not built).** Three rules turn the 45-Sol deadline and the trade cargo into sim state. There is no oxygen network on the grid: the scrubber is a meter, not a flow. The work order is `docs/milestone-6-plan.md`.
 
-- **Smelter ore.** Each hour the smelter runs Nominal it adds to an ore stockpile; a full crate (1,000 kg of raw silicon) is added to *The Mullein*'s manifest. Target: a well-run colony fills the 10-crate manifest by the nominal Sol-10 launch while keeping the habs warm. Fewer crates is allowed and means less to haggle with. The rate lives in `content/landing_ash_plain.ron`, and the content (and the `caretaker` preset, which today loses the smelter on Sol 5) is retuned until the target is reachable.
-- **Scrubber saturation.** `scrubber_01` gets a saturation meter in basis points that fills each hour it runs and is full on Sol 45; hours it is unpowered make it worse. Installing Carbon Filters (milestone 8) resets it. The rates live in content.
-- **Base Hypoxia.** Driven by the meter. Sols 45 to 47: O2 candles draw power, the smelter produces at half rate, repairs are slower and crew stress climbs, with Maya's vitals critical. Sol 48: the Ground crew fall unconscious and production stops. Sol 49 on: the colony is lost and the autopsy log prints (milestone 8 shows it on the cockpit terminal).
+- **Smelter ore.** Each hour the smelter runs Nominal it adds its `ore` rate (kg) to a ground stockpile. While *The Mullein* is on the pad, each full crate (1,000 kg of raw silicon, 100% integrity) is loaded onto her manifest, up to `hold_crates` (10) in `content/mullein.ron`; otherwise ore stays in the stockpile and loads when she is back on the pad. Her manifest starts empty and she may launch with any number of crates, including none. Target: a well-run colony fills the hold by the nominal Sol-10 launch while keeping the habs warm. The rate lives in `content/landing_ash_plain.ron`, and the content and the `caretaker` preset (which today loses the smelter on Sol 5) are retuned until the target is reachable, using a new `PowerAbovePercent` trigger to cycle the smelter.
+- **Scrubber saturation.** `scrubber_01` gets a whole-number saturation meter (`life_support`) that gains one unit each hour it runs and more each hour it is off or unpowered; its capacity (1,170 = 45 Sols x 26) makes it full on Sol 45 under nominal running. Installing Carbon Filters (milestone 8) resets it. The rates live in content.
+- **Base Hypoxia.** Driven by the meter and the O2 candle supply, so dark hours pull every stage earlier. *Degraded* starts when the meter fills: O2 candles burn (extra scrubber draw) for 78 hours, the smelter produces at half rate, a repair takes several hours instead of being instant, Ground crew stress climbs, and Ground crew with `adult: false` (Maya) go vitals-critical. *Unconscious* starts when the candles run out (Sol 48): production stops and repairs are refused, but Standing Orders still switch modules. *Lost* follows 26 hours later (Sol 49): the colony stops and the sim records a typed autopsy (milestone 8 shows it on the cockpit terminal). Stages apply whoever is on the Ground; crew effects only to Ground crew. Saves from before milestone 6 get the shipped `ore` and `scrubber` blocks for matching module IDs.
 
 **Standing Orders rule cards.** Orders are stored as typed Rust enums, never as strings. The player builds each one as a rule card by filling trigger, action and priority slots from lists, and the terminal renders the card in command syntax:
 
@@ -137,7 +138,7 @@ pub enum Action  { Activate(ModuleId), Deactivate(ModuleId), DivertHeat { to: Mo
 pub struct StandingOrder { pub triggers: Vec<Trigger>, pub actions: Vec<Action>, pub priority: u8 }
 ```
 
-Only triggers and actions the colony can act on today are in the enums. `WaterBelowLiters` and `EngageEmergencyCandles` join them when the water and life-support systems exist. Each action maps to one colony `Command` and goes through `Colony::apply`, so a card can do nothing a player couldn't. Temperatures render in C with one decimal place, rounded half away from zero from integer centi-degrees.
+Only triggers and actions the colony can act on today are in the enums. Milestone 6 adds `PowerAbovePercent(u8)` so a card can restart the smelter when power recovers. `WaterBelowLiters` and `EngageEmergencyCandles` join them when the water and life-support systems exist. Each action maps to one colony `Command` and goes through `Colony::apply`, so a card can do nothing a player couldn't. Temperatures render in C with one decimal place, rounded half away from zero from integer centi-degrees.
 
 How the Caretaker runs them (`orders::Orders`, stored on `World` so cards and their firing state are in saves):
 
