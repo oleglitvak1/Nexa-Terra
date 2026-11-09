@@ -79,7 +79,7 @@ Base modules do not degrade on arbitrary timers. Breakdowns are the direct conse
 * *Silicate Baffle Mesh* (coarse mechanical dust filtration for mining machinery; not interchangeable with the life-support Carbon Filters, which need microgravity fabrication off-world)
 
 
-* **The Standing Orders Protocol:** Before departing on a trade run, the player sets systemic fail-safes via an amber CRT terminal (e.g., `IF Grid Power < 25% THEN Shut Down Smelter AND Divert Heat to Hab 01`). Orders are built as rule cards: the player fills trigger, action and priority slots from lists, and the terminal displays the result in this command syntax. Typed entry may be added later.
+* **The Standing Orders Protocol:** Before departing on a trade run, the player sets systemic fail-safes via an amber CRT terminal (e.g., `IF Grid Power < 25% THEN Shut Down Smelter AND Divert Heat to Hab 01`). Orders are built as rule cards: the player fills trigger, action and priority slots from lists, and the terminal displays the result in this command syntax. Typed entry may be added later. Most players never need to build one: they pick a named posture (*Protect the habs*, *Balanced*, *Max ore*) described in plain words, set the smelter's battery guard with two dials, and read a forecast of what the base will do while they're away. Building cards is the advanced option for players who want finer control.
 
 ```
 [Power / Thermal Distribution] ──► [Nominal Operation: 0% Wear]

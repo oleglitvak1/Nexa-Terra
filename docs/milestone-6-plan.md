@@ -2,23 +2,35 @@
 
 Three rules turn the 45-Sol deadline and the trade cargo into sim state: the
 smelter makes the ore crates, the scrubber's saturation meter counts down to
-Sol 45, and Base Hypoxia runs its stages. The content and the `caretaker`
-preset are retuned so a well-run colony has 10 crates by Sol 10.
+Sol 45, and Base Hypoxia runs its stages. Alongside them, the Caretaker gets
+easier to use, so that meeting the trade target never needs hand-built logic:
+a battery guard on the smelter, named order presets in plain words, and a
+forecast before launch.
 
-The rules are in `docs/architecture.md` ("Colony gaps"). This file is the work
-order; delete it, or mark it done, when the milestone closes.
+The rules are in `docs/architecture.md` ("Colony gaps" and "Making the
+Caretaker approachable"). This file is the work order; delete it, or mark it
+done, when the milestone closes.
 
-## Decisions (interview, 2026-11-09)
+## Decisions
+
+Interview, 2026-11-09, then revised the same day after a difficulty review:
+building rule cards felt like coding, and the first plan made it worse by
+asking the preset to cycle the smelter with a new `PowerAbovePercent` trigger.
+That trigger is dropped.
 
 | Question | Decision |
 | --- | --- |
 | Empty manifest | *The Mullein* starts empty and fills from the smelter. She may launch with 0 crates; the launch screen warns below a full hold. |
-| Retune approach | Add a `PowerAbovePercent` trigger (model, evaluator, editor) so `caretaker` can cycle the smelter: off when power is low, back on when it recovers. |
+| Reaching 10 crates by Sol 10 | A **battery guard** on the smelter: a module setting, not a card. It pauses the smelter below one battery percentage and resumes it above another. The player turns two dials. No new trigger. |
+| Orders for the average player | Named **postures** in plain words (*Protect the habs*, *Balanced*, *Max ore*) loaded from the orders screen are the normal path. Building cards stays, as the advanced option. |
+| Feedback before leaving | A **forecast** on the launch screen and the orders screen: the sim runs a copy of the world ahead and summarises what happens if nobody touches the base. |
 | "Repairs slower" | During hypoxia a repair takes `hypoxia_repair_hours` (content): the machine stays failed until a countdown ends. Outside hypoxia repairs stay instant. |
 | Stage timing | Meter plus candle supply. Degraded starts when the meter fills; Unconscious when the O2 candles (78 h) run out; Lost 26 h later. Nominal running gives Sols 45 / 48 / 49; dark hours pull it all earlier. |
-| Old saves | Modules with matching IDs (`smelter_01`, `scrubber_01`) get the shipped `ore` and `scrubber` blocks on load, as the crew migration did for habs. The meter starts at the hours already elapsed. |
-| While Unconscious | Only the Caretaker works: Standing Orders keep switching modules; manual repairs are refused; production stops. |
+| Old saves | Modules with matching IDs (`smelter_01`, `scrubber_01`) get the shipped `ore`, `guard` and `scrubber` blocks on load, as the crew migration did for habs. The meter starts at the hours already elapsed. |
+| While Unconscious | Only automation works: Standing Orders and the guard keep switching; manual repairs are refused; production stops. |
 | Ore while away | Ore piles up in a ground stockpile and fills the hold when she's back on the pad (used from milestone 8). |
+| Plain-language failure causes | Deferred to milestone 8's Black Box ("smelter froze on Sol 5: card 1 shut it off at 25% power and nothing restarted it"). M6 keeps the events the Black Box will need. |
+| Playtest early | Show the orders screen (postures, guard, forecast) to one or two non-programmers at the end of M6, not only at the M8 playtest. |
 
 ## What the code shows today
 
@@ -31,6 +43,11 @@ order; delete it, or mark it done, when the milestone closes.
   (30 kW x 260 + 300 kWh stored). The other loads use about 4,940 kWh, leaving
   roughly 210 smelter-hours. Ten crates by Sol 10 means about 50 kg/h while
   Nominal, and the smelter must stay warm because it heats the habs.
+- A switched-off smelter freezes (its band starts at -5.0 C against -40.0 C
+  outside), so a guard that pauses it for long goes Offline. The tuning has to
+  keep pauses short, or the guard needs a keep-warm rule (step 9).
+- The orders screen can build and delete cards but can't load a preset; only
+  scripts and `nexa-tools` can.
 - `Tick::sol()` counts from Sol 0 at landfall, so "full on Sol 45" is tick
   1170 (45 x 26) with one unit per running hour.
 - Flight tests, `gdd_invariants::ready()`, `ship.rs` tests and `nexa-tools
@@ -50,6 +67,40 @@ order; delete it, or mark it done, when the milestone closes.
   Otherwise the ore stays in the stockpile.
 - Event: `OreCrateLoaded { id, crates }`.
 
+**Battery guard (`colony`).**
+- A `guard` block on a module's def gives its shipped setting, e.g. on the
+  smelter `guard: Some((pause_below_percent: 25, resume_above_percent: 60))`.
+  The current setting lives in the module's state, so it is saved.
+- Each hour, before power is routed, a guarded module that is switched on
+  pauses when its power network's stored charge is below `pause_below` and
+  resumes when it is above `resume_above`. Between the two it keeps its state,
+  so it doesn't flutter.
+- Paused is not switched off: `Deactivate` still turns it off, and the guard
+  never turns on a module the player or a card switched off.
+- `Command::SetGuard { module, guard: Option<Guard> }` (in `nexa-types`)
+  changes or clears it; refused unless `pause_below < resume_above <= 100`.
+- Events: `GuardPaused { module }` and `GuardResumed { module }`.
+
+**Postures (`orders`).**
+- Each preset in `content/standing_orders.ron` gains a display `name` and a
+  plain-language `summary` (one or two lines, no command syntax).
+- Shipped postures: `protect-habs` (today's three cards: the habs stay warm, the
+  smelter is given up), `caretaker` (keeps its ID, shown as *Balanced*: the habs
+  stay warm and the guarded smelter keeps working) and `max-ore` (the smelter
+  first, the habs at risk).
+- Loading one replaces the cards (the orders screen asks first if any are set).
+
+**Forecast (new `forecast` module).**
+- `World::forecast(&self, until_sol) -> Forecast` copies the world and ticks
+  the copy with nobody touching it, to `until_sol` (45 by default) or until the
+  colony is lost. Colony ticks use no RNG, so the result is exact for the base;
+  Slip delays are unknown and aren't part of it.
+- `Forecast` holds: each machine's first failure (module, state, Sol); each
+  Ground crew member's peak stress level; crates loaded and ore stockpiled by
+  the horizon; the Sol the scrubber fills; the hypoxia stage reached.
+- Cost: at most 1,170 ticks of a 9-module colony, run when the screen opens or
+  the orders change, not every frame.
+
 **Scrubber meter (new `life_support` module, owned by `Colony`).**
 - A `scrubber` block on `scrubber_01`, e.g.
   `(capacity: 1170, per_running_hour: 1, per_dark_hour: 2)`. A dark hour is
@@ -63,7 +114,7 @@ order; delete it, or mark it done, when the milestone closes.
   `hypoxia_repair_hours`; Ground crew gain stress at a new rate in `crew.ron`;
   `VitalsCritical` fires for each Ground member with `adult: false` (Maya).
 - *Unconscious* (candles out): production stops; `Repair` is refused with
-  `CommandError::CrewUnconscious`; Standing Orders still switch modules.
+  `CommandError::CrewUnconscious`; Standing Orders and the guard still switch.
 - *Lost* (`unconscious_hours_to_loss: 26` later): the colony stops stepping,
   `ColonyLost { sol }` fires and the sim builds a typed `Autopsy` (meter-full
   Sol, candles-out Sol, last vitals per Ground crew member, last orders fired).
@@ -76,14 +127,15 @@ order; delete it, or mark it done, when the milestone closes.
 
 Each step ends green on test, clippy, fmt and both WASM builds, then commits.
 
-1. **Docs.** Record the decisions in `docs/architecture.md` ("Colony gaps",
-   module table gains `life_support`, orders section gains `PowerAbovePercent`).
-   *(Done with this plan.)*
-2. **Content and save shape.** `ore` and `scrubber` blocks on `ModuleDef`;
-   `hold_crates` on `ShipDef`; allow and ship an empty manifest. Content checks:
-   at most one ore producer and one scrubber, nonzero rates, crate mass > 0. New
-   state fields get serde defaults; pre-M6 saves get the shipped blocks by
-   module ID. Tests for parsing, rejection and old-save loading.
+1. **Docs.** Record the decisions in `docs/architecture.md` and the Standing
+   Orders paragraph of `docs/game-design.md`. *(Done with this plan.)*
+2. **Content and save shape.** `ore`, `guard` and `scrubber` blocks on
+   `ModuleDef`; `hold_crates` on `ShipDef`; allow and ship an empty manifest;
+   `name` and `summary` on presets. Content checks: at most one ore producer
+   and one scrubber, nonzero rates, crate mass > 0, guard thresholds ordered,
+   every preset has a name and summary. New state fields get serde defaults;
+   pre-M6 saves get the shipped blocks by module ID. Tests for parsing,
+   rejection and old-save loading.
 3. **Fixture fallout.** A `Ship::load_crates` helper so flight tests,
    `gdd_invariants::ready()` and `ship.rs` tests start with 10 crates
    explicitly. `nexa-tools --launch` / `--sweep` default to 10 Sols under
@@ -91,38 +143,60 @@ Each step ends green on test, clippy, fmt and both WASM builds, then commits.
 4. **Smelter ore** (tests first): production only while running and Nominal;
    the crate boundary; the hold cap; stockpiling while away; loading resumes
    back on the pad; determinism.
-5. **Scrubber meter.** Full exactly at tick 1170 running every hour; one hour
+5. **Battery guard** (tests first): pauses below and resumes above, holds
+   between; never overrides a switch-off; `SetGuard` validation; runs before
+   Standing Orders so a card can still override it in the same hour; saved and
+   loaded.
+6. **Scrubber meter.** Full exactly at tick 1170 running every hour; one hour
    earlier per dark hour; `ScrubberSaturated` once.
-6. **`PowerAbovePercent` trigger.** Enum variant, evaluator with the power
-   re-arm margin, rendering, save check, editor entry. Tests mirror
-   `PowerBelowPercent`.
 7. **Hypoxia stages.** Degraded, Unconscious, Lost and the pending repair.
    Un-ignore `hypoxia_runs_degraded_then_unconscious_then_lost` (Sols 45-47, 48,
    49). Test the stages during a voyage catch-up, and that dark hours pull them
    earlier.
-8. **Autopsy record.** Built at loss, kept in the save; `nexa-tools` prints it.
-9. **Retune.** Add ore, crates-by-Sol and scrubber columns to the `nexa-tools`
-   table. Tune `kg_per_hour` and the `caretaker` preset (cycling the smelter on
-   `PowerAbovePercent`) so that: `caretaker` has 10 crates by Sol 10 and keeps
-   both habs Nominal with no wear through Sol 45 (existing caretaker tests stay
-   green); an unattended colony gets clearly fewer; the M5 sweep numbers hold.
-   Write the numbers into the architecture doc's tuning note.
+8. **Autopsy and forecast.** The `Autopsy` is built at loss and kept in the
+   save; `nexa-tools` prints it. `World::forecast` with tests: it leaves the
+   real world untouched, matches actually running the same Sols tick for tick,
+   and reports the shipped `protect-habs` posture losing the smelter on Sol 5.
+9. **Retune and postures.** Add ore, crates-by-Sol, guard pauses and scrubber
+   columns to the `nexa-tools` table. Tune `kg_per_hour`, the smelter's shipped
+   guard and the three postures so that, each checked by a test:
+   - *Balanced* (`caretaker`) loads 10 crates by Sol 10 and keeps both habs
+     Nominal with no wear through Sol 45, and the crew calm (the existing
+     caretaker tests stay green);
+   - *Protect the habs* keeps the habs Nominal and loads fewer crates;
+   - *Max ore* loads 10 crates sooner and lets a hab get cold;
+   - no orders at all, with only the shipped guard, still loads a few crates;
+   - the M5 sweep numbers hold.
+
+   If a paused smelter freezes before the battery recovers, add a keep-warm
+   rule to the guard (resume early when the module nears the bottom of its
+   band) rather than asking players for a card. Write the numbers into the
+   architecture doc's tuning note.
 10. **Scripts.** `expect` keys `ore KG`, `scrubber PCT`,
-    `hypoxia none|degraded|unconscious|lost`; screenshot points `hypoxia` and
-    `lost`; new `scripts/playthrough/e_hypoxia.nts` that never launches and
-    runs past Sol 49; a `runs_to_the_end` case in `playthroughs.rs`.
-    `a_nominal`'s `expect crates 10` and `d_prospector`'s `expect crates 7`
-    pass on real output.
-11. **Game screens.** Colony status `ORE 640/1000 kg  CRATES 6/10  SCRUBBER 23%
-    (34 Sols)`; hypoxia banner and base-log lines; a COLONY LOST panel with the
-    autopsy summary; launch confirmation shows crates and warns below a full
-    hold; `PowerAbovePercent` in the orders editor. Check with
-    `--script ... --screenshot-at hypoxia,lost`.
+    `hypoxia none|degraded|unconscious|lost`; a `guard MODULE PAUSE RESUME|off`
+    verb; screenshot points `forecast`, `hypoxia` and `lost`; new
+    `scripts/playthrough/e_hypoxia.nts` that never launches and runs past Sol
+    49; a `runs_to_the_end` case in `playthroughs.rs`. `a_nominal`'s `expect
+    crates 10` and `d_prospector`'s `expect crates 7` pass on real output.
+11. **Game screens.**
+    - Colony status: `ORE 640/1000 kg  CRATES 6/10  SCRUBBER 23% (34 Sols)`;
+      a guard marker on a paused module; a hypoxia banner and base-log lines; a
+      COLONY LOST panel with the autopsy summary.
+    - Module detail: the guard's two dials, in 5% steps.
+    - Orders screen: a posture picker first (name and summary), then the
+      existing card builder under an "advanced" heading; a one-line forecast
+      that updates when the cards change.
+    - Launch confirmation: crates aboard (warning below a full hold) and the
+      forecast summary.
+    - Check with `--script ... --screenshot-at forecast,hypoxia,lost`.
 12. **Close out.** Mark M6 done in the roadmap; update `scripts/README.md`.
+    Run the early playtest with one or two non-programmers and write down what
+    they got stuck on.
 
 ## Done when
 
-- `caretaker` loads 10 crates by Sol 10 with both habs Nominal.
+- A new player can pick *Balanced*, launch on Sol 10 with 10 crates and see a
+  forecast that the base holds to Sol 45, without building a card.
 - The meter is full on Sol 45 under nominal running.
 - Hypoxia goes Degraded, Unconscious, Lost on Sols 45, 48, 49 and leaves an autopsy.
 - The four existing playthroughs reach their `dock` line; `e_hypoxia` plays to its end.
