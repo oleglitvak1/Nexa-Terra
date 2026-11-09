@@ -13,7 +13,7 @@ expect fuel 650
 expect crates 7
 expect delay 0
 close
-# Milestone 6 from here.
+# Not built yet from here (docking: milestone 7).
 dock
 haggle carbon-filters
 give-fuel 200

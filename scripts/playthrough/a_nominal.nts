@@ -21,7 +21,7 @@ expect machine hab_02 nominal
 expect stress maya calm
 close
 screenshot colony-after-catchup
-# Milestone 6 from here.
+# Not built yet from here (docking: milestone 7).
 dock
 haggle carbon-filters
 return

@@ -1,6 +1,6 @@
 # Nexa Terra — Technical Architecture
 
-Source of truth for this file in the repo. Mirrors the "Nexa Terra — Technical Architecture" doc in Claude (Nov 2026).
+This repo copy is the source of truth. An older "Nexa Terra — Technical Architecture" doc in Claude (Nov 2026) is no longer kept in sync; when they differ, this file wins.
 
 ## Summary and key decisions
 
@@ -31,7 +31,7 @@ Seven rules keep every later layer (visuals, web, multiplayer) additive instead 
 
 ## Workspace and crate layout
 
-One Cargo workspace with five crates; dependencies only point downward toward `nexa-types`, and only `nexa-game` knows macroquad exists.
+One Cargo workspace with four crates now and a fifth (`nexa-server`) later; dependencies only point downward toward `nexa-types`, and only `nexa-game` knows macroquad exists.
 
 ```text
         nexa-game            nexa-tools            nexa-server (later)
@@ -63,8 +63,9 @@ nexa-terra/
   crates/
     nexa-types/  nexa-sim/  nexa-game/  nexa-tools/  nexa-server/ (later)
   content/            # RON game data
-  assets/             # manifest.ron, fonts, sprites, shaders
-  audio/              # cues.ron, generated WAVs
+  scripts/            # playthrough scripts (.nts)
+  assets/             # manifest.ron, fonts, sprites, shaders (empty until Layer 1)
+  audio/              # cues.ron, generated WAVs (empty until Layer 1)
 ```
 
 ## Simulation core design
@@ -72,33 +73,43 @@ nexa-terra/
 The sim is a pure state machine: `World` + `Command` → new `World` + a list of `SimEvent`s. The front end sends commands and renders state and events; it never mutates the world directly.
 
 ```rust
-pub fn apply(world: &mut World, cmd: Command) -> Result<Vec<SimEvent>, CommandError>;
-pub fn tick(world: &mut World) -> Vec<SimEvent>; // one fixed step
-pub fn launch(world: &mut World, universe: &mut dyn Universe) -> Result<Vec<SimEvent>, LaunchError>;
+impl World {
+    pub fn apply(&mut self, cmd: &Command) -> Result<Vec<SimEvent>, CommandError>;
+    pub fn tick(&mut self) -> Vec<SimEvent>; // one fixed step
+    pub fn add_order(&mut self, order: StandingOrder) -> Result<usize, OrderError>;
+    pub fn confirm_split(&mut self, assignments: &BTreeMap<CrewId, Assignment>) -> Result<Vec<SimEvent>, SplitError>;
+    pub fn launch(&mut self, universe: &mut dyn Universe) -> Result<Vec<SimEvent>, LaunchError>;
+    pub fn advance_voyage(&mut self) -> Result<VoyageStep, FlightError>; // one Sol of The Slip
+    pub fn resolve_hazard(&mut self, option_id: &str) -> Result<Vec<SimEvent>, FlightError>;
+}
 ```
 
-The universe is reached only at the sync points (launch now, docking in milestone 6), so it is passed to the call that syncs, not to every tick. `tick` stays universe-free.
+`Command` (in `nexa-types`) covers the colony actions a player or a Standing Order can take; the Split, orders and flight have their own `World` methods with typed errors. `SimEvent` lives in `nexa-sim`.
+
+The universe is reached only at the sync points (launch now, docking with Scrap Barge 77 in milestone 7), so it is passed to the call that syncs, not to every tick. `tick` stays universe-free.
 
 **Time.** The base unit is a fixed tick (26 ticks per Sol: one per hour of Nexa Terra's 26-hour day). The sim never reads the clock. The front end decides how fast ticks advance (paused, 1x, fast-forward), so the colony runs real-time with pause while flight and station phases advance in discrete event steps.
 
-**Modules inside `nexa-sim`:**
+**Modules inside `nexa-sim`** (*planned* marks modules not built yet):
 
 | Module | Owns | Key types |
 | --- | --- | --- |
-| `grid` | Tile map, conduits, power / thermal fluid / oxygen routing | `Grid`, `Tile`, `Network`, `FlowSolver` |
-| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step | `Colony`, `ColonyDef`, `Module`, `ModuleDef`, `ModuleKind` (Utility, Hab) |
+| `grid` | Tile map parsed from the landing content; conduit and heat-line networks | `Grid`, `Tile`, `Networks` |
+| `colony` | Modules placed on the grid, built from a content file; the hourly power, heat and wear step (milestone 6 adds smelter ore output and scrubber saturation) | `Colony`, `ColonyDef`, `Module`, `ModuleDef`, `ModuleKind` (Utility, Hab) |
 | `machines` | Machine state, tolerance bands, wear, failures | `Machine`, `MachineState` (Nominal, Overheat, Freeze, Burnout, Offline), `ToleranceBand` |
 | `parts` | Wear parts and inventory | `PartKind` (TungstenFilament, VitonSeal, SilicateBaffleMesh, CarbonFilter, ...), `Inventory` |
 | `check` | The one skill-check function every hazard (and later haggle) uses | `check()`, `CheckDef`, `CheckTuning`, `Roll`, `Outcome` (Success, Partial, Fail) |
 | `ship` | *The Mullein*: tank, ECM pods, cargo manifest, where she is | `Ship`, `ShipDef`, `OreCrate`, `ShipLocation` (Pad, InSlip, Holding) |
 | `crew` | Six named specialists, skills, stress, morale, assignments, the Split rules | `CrewId`, `CrewMember`, `Skill`, `Trait`, `Assignment` (Ground, Flight), `SplitError` |
 | `orders` | Standing Orders rule cards: typed model + evaluator, run each tick from `World::tick` | `Trigger`, `Action`, `StandingOrder`, `Orders`, `render()`, `evaluate()` |
-| `flight` | The Slip: launch, transit Sol by Sol, hazards and their options, delays and the random-delay cap, arrival | `Voyage`, `HazardsDef`, `HazardDef`, `HazardOption`, `Toll`, `Resolution`, `FlightError` |
+| `hazards` | Slip hazard content: options, costs, tolls, check tuning, delay ranges and the cap | `HazardsDef`, `HazardDef`, `HazardOption`, `Toll`, `DelayKind` |
+| `flight` | The Slip: launch, transit Sol by Sol, resolving hazards, delays and the random-delay cap, arrival | `Voyage`, `VoyageStep`, `Resolution`, `LaunchError`, `FlightError` |
 | `universe` | The `Universe` trait and `OfflineUniverse` | `Universe`, `OfflineUniverse` |
-| `station` | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
-| `echoes` | Logged moral choices and their delayed payoffs | `EchoSeed`, `EchoTrigger` |
-| `epochs` | Atmosphere state and epoch milestones | `Atmosphere` (pressure, temp, toxicity, water), `Epoch` |
-| `blackbox` | Log of everything that happened while the crew was away | `LogEntry`, `Reconciliation` |
+| `script` | Playthrough scripts: parse `.nts` lines and run them headless | `Step`, `Expect`, `Line`, `RunError` |
+| `station` (*planned*) | Docking, haggling, integrity vs. heat | `HaggleSession`, `VendorPatience`, `Leverage`, `Reputation` |
+| `echoes` (*planned*) | Logged moral choices and their delayed payoffs | `EchoSeed`, `EchoTrigger` |
+| `epochs` (*planned*) | Atmosphere state and epoch milestones | `Atmosphere` (pressure, temp, toxicity, water), `Epoch` |
+| `blackbox` (*planned*) | Log of everything that happened while the crew was away | `LogEntry`, `Reconciliation` |
 | `rng` | The only source of randomness | `SimRng` (SplitMix64: seeded, serializable, no extra crate) |
 
 **Colony grid model.** The colony steps once per tick (one planetary hour), in three phases. All numbers are integers and live in the content file.
@@ -106,6 +117,12 @@ The universe is reached only at the sync points (launch now, docking in mileston
 - **Power (battery bank).** Touching conduit tiles form a power network. Each hour, a network's generators plus its stored battery charge supply its consumers in content-file order; a consumer that doesn't fit what's left goes dark for that hour. Surplus charges the batteries, a deficit drains them. `grid.power %` is total stored charge over total capacity.
 - **Heat (cold pull + heat lines).** Running modules pour heat into their heat line's pool, shared evenly among the line's working (not failed) machines, or sent entirely to one module when the player diverts heat (`DivertHeat`). Then every module loses a fixed percentage of its gap to the outside temperature. A module off any heat line keeps its own heat.
 - **Wear meter.** A machine gains wear (basis points per hour) only while out of its tolerance band. At 100% it fails: Overheat becomes Burnout, Freeze becomes Offline. A failed machine draws no power and makes no heat. A repair uses one part (Burnout: Tungsten Heating Filament; Offline: Viton Seal) and resets wear to 0.
+
+**Colony gaps (milestone 6, decided, not built).** Three rules turn the 45-Sol deadline and the trade cargo into sim state. There is no oxygen network on the grid: the scrubber is a meter, not a flow.
+
+- **Smelter ore.** Each hour the smelter runs Nominal it adds to an ore stockpile; a full crate (1,000 kg of raw silicon) is added to *The Mullein*'s manifest. Target: a well-run colony fills the 10-crate manifest by the nominal Sol-10 launch while keeping the habs warm. Fewer crates is allowed and means less to haggle with. The rate lives in `content/landing_ash_plain.ron`, and the content (and the `caretaker` preset, which today loses the smelter on Sol 5) is retuned until the target is reachable.
+- **Scrubber saturation.** `scrubber_01` gets a saturation meter in basis points that fills each hour it runs and is full on Sol 45; hours it is unpowered make it worse. Installing Carbon Filters (milestone 8) resets it. The rates live in content.
+- **Base Hypoxia.** Driven by the meter. Sols 45 to 47: O2 candles draw power, the smelter produces at half rate, repairs are slower and crew stress climbs, with Maya's vitals critical. Sol 48: the Ground crew fall unconscious and production stops. Sol 49 on: the colony is lost and the autopsy log prints (milestone 8 shows it on the cockpit terminal).
 
 **Standing Orders rule cards.** Orders are stored as typed Rust enums, never as strings. The player builds each one as a rule card by filling trigger, action and priority slots from lists, and the terminal renders the card in command syntax:
 
@@ -162,18 +179,18 @@ A typed-entry parser that produces the same enums can be added later; the slice 
 
 **Skill checks** use one function, `check(crew, &CheckDef, &CheckTuning, &mut rng) -> Roll`, with outcomes of Success, Partial and Fail. Every hazard and haggle resolution goes through it, which makes balancing and testing one place. A `CheckDef` names a `Skill`, a difficulty and specialist bonuses by `CrewId`; `CheckTuning` (`content/hazards.ron`) holds the formula's numbers. The Flight-side member with the best `skill * skill_weight + bonus` rolls (ties go to roster order): score = that + a die roll from 1 to `die_sides`. Score at or above the difficulty is a Success, within `partial_band` below it a Partial, lower a Fail. The `Roll` records who rolled, the die, score and outcome for the transit log.
 
-**The Slip (milestone 5).** *The Mullein* (`content/mullein.ron`, kept in the save as `World.ship` like the colony's module definitions) has a 1,000 L tank, burns 350 L per leg and 150 L per Overclock Burn, all in whole liters; she carries a few ECM pods and a fixed outbound manifest of raw-silicon ore crates, each with a mass (kg) and an integrity percent. `World.credits` is an integer balance that starts from the same file; a ransom spends it, and milestone 6's haggle builds on it.
+**The Slip (milestone 5).** *The Mullein* (`content/mullein.ron`, kept in the save as `World.ship` like the colony's module definitions) has a 1,000 L tank, burns 350 L per leg and 150 L per Overclock Burn, all in whole liters; she carries one ECM pod and an outbound manifest of raw-silicon ore crates, each with a mass (kg) and an integrity percent. For now the manifest is fixed in the file; from milestone 6 it is whatever the smelter has produced by launch. `World.credits` is an integer balance that starts from the same file; a ransom spends it, and milestone 7's haggle builds on it.
 
 - *Launch.* `World::launch(universe)` needs the ship on the pad, a confirmed Split with at least one Flight member, and fuel for the leg. It burns the leg's fuel, draws a seed from `World.rng`, asks the universe for a `LaunchBriefing` (`Universe::on_launch`) and starts a `Voyage`, which keeps a copy of the hazard content it launched with so a save resolves the same.
 - *Transit.* `World::advance_voyage` moves one Sol at a time. The briefing schedules Slip events on Sols of the leg; when one comes up its hazard is pending and the voyage won't advance until `World::resolve_hazard(option)` settles it.
-- *The interdiction* (`content/hazards.ron`) has five options: the countermeasure (Piloting check, spends an ECM pod, unavailable with none left), the Overclock Burn (Engineering check, burns 150 L, unavailable if it would leave less than the return leg's 350 L; failure is engine drift, a severe delay), and the concession split three ways: dump cargo (certain, costs crates, unavailable with fewer aboard), pay the ransom (certain, costs credits, unavailable with too few) and bluff (Negotiation check). Each option has a cost paid up front and a `Toll` for Partial (escape with a minor cost: cargo integrity or a minor delay) and Fail.
-- *Delays.* Minor hazard delays draw +5 to +7 Sols and severe drift +7 to +10. Random delays are capped at +12 Sols per round trip: the voyage keeps a running total so milestone 6's return leg respects the same cap. Player-caused delays (audits, from milestone 6) are uncapped.
+- *The interdiction* (`content/hazards.ron`) has five options: the countermeasure (Piloting check, spends an ECM pod, unavailable with none left), the Overclock Burn (Engineering check, burns 150 L; outbound it is unavailable if it would leave less than the return leg's 350 L, and on the return leg, whose 350 L is burned at launch, it only needs 150 L in the tank, even if that runs her dry; failure is engine drift, a severe delay), and the concession split three ways: dump cargo (certain, costs crates, unavailable with fewer aboard), pay the ransom (certain, costs credits, unavailable with too few) and bluff (Negotiation check). Each option has a cost paid up front and a `Toll` for Partial (escape with a minor cost: cargo integrity or a minor delay) and Fail.
+- *Delays.* Minor hazard delays draw +5 to +7 Sols and severe drift +7 to +10. Random delays are capped at +12 Sols per round trip: the voyage keeps a running total so milestone 8's return leg respects the same cap. Player-caused delays (audits, from milestone 7) are uncapped.
 - *The colony while away.* While the voyage is in transit `World::tick` holds the colony, so nothing runs twice. On arrival the colony catches up: it ticks through every Sol the voyage used, Standing Orders and Ground-crew stress included, and `advance_voyage` returns those events apart from the voyage's own so the base log can summarize them.
-- *Holding.* Milestone 5 ends outbound. On arrival the ship holds over Scrap Barge 77 with the flight crew aboard, the colony runs normally with the Ground crew, and there is no relaunch until milestone 6 adds docking, the haggle and the return leg.
+- *Holding.* Milestone 5 ends outbound. On arrival the ship holds over Scrap Barge 77 with the flight crew aboard, the colony runs normally with the Ground crew, and there is no relaunch until milestones 7 and 8 add docking, the haggle and the return leg.
 
 Events: `Launched`, `SlipSolPassed`, `HazardEncountered`, `HazardResolved` (the option, the `Roll` if any, and what it cost after the cap) and `Arrived`.
 
-*Tuning.* `cargo run -p nexa-tools -- --launch --seed 7 --resolve overclock` flies one voyage headless (after SOLS on the ground, default 0) and prints the transit log, each roll, what it cost and where the ship ended up; caught-up colony events are stamped with the Sol they fell in. `--sweep N` flies seeds 0..N per option and prints Success/Partial/Fail rates and mean fuel, cargo integrity, crates, credits and delay at arrival. Both fly Cal, Jonathan and Dax unless `--split` says otherwise. First-pass numbers (`content/hazards.ron`): `skill_weight` 3, a d20, `partial_band` 6 and difficulty 29 on all three checks, with a +3 specialist bonus. A rated-5 specialist aboard scores 18 + d20: 50% Success, 30% Partial, 20% Fail, so every check option is a real gamble and none beats the certain concessions outright. Without the specialist the next-best member is much weaker (Dax's Piloting 3 gives 9 + d20: 5% Success, 30% Partial, 65% Fail), which is the Split's price. The Mullein carries one ECM pod, so using it outbound leaves none for milestone 6's return leg; the ransom (300 of the 500 starting credits) eats into the haggle budget; dumping costs 3 of 10 crates.
+*Tuning.* `cargo run -p nexa-tools -- --launch --seed 7 --resolve overclock` flies one voyage headless (after SOLS on the ground, default 0) and prints the transit log, each roll, what it cost and where the ship ended up; caught-up colony events are stamped with the Sol they fell in. `--sweep N` flies seeds 0..N per option and prints Success/Partial/Fail rates and mean fuel, cargo integrity, crates, credits and delay at arrival. Both fly Cal, Jonathan and Dax unless `--split` says otherwise. First-pass numbers (`content/hazards.ron`): `skill_weight` 3, a d20, `partial_band` 6 and difficulty 29 on all three checks, with a +3 specialist bonus. A rated-5 specialist aboard scores 18 + d20: 50% Success, 30% Partial, 20% Fail, so every check option is a real gamble and none beats the certain concessions outright. Without the specialist the next-best member is much weaker (Dax's Piloting 3 gives 9 + d20: 5% Success, 30% Partial, 65% Fail), which is the Split's price. The Mullein carries one ECM pod, so using it outbound leaves none for the return leg (milestone 8); the ransom (300 of the 500 starting credits) eats into the haggle budget; dumping costs 3 of 10 crates.
 
 ## Presentation layering plan
 
@@ -188,7 +205,7 @@ The game starts as a terminal inside a macroquad window and gains visuals layer 
 
 **Terminal renderer.** A fixed grid of cells (glyph, ink color) drawn with a monospace font. Layer 1 renders it to an offscreen texture and runs the CRT shader over that texture. All screens (Standing Orders console, hazard terminal, haggle, Black Box log) are views drawn into this grid at first; Layer 2 replaces regions of it with sprite panels.
 
-**Screens as views.** Each screen is a struct implementing `View { fn draw(&self, world: &World, ui: &mut Ui); fn input(&mut self, key) -> Option<Command>; }`. Views read state and emit commands, nothing more.
+**Screens as views.** Each screen (`orders_view`, `crew_view`, `voyage_view`, plus the colony screen) is a struct with `draw(&self, t: &mut Terminal, world: &World, help_row)` and its own key handling. Views read state and change the world only through `World`'s public methods (`apply`, `add_order`, `confirm_split`, `launch`, `resolve_hazard`, ...), never by touching its fields, and show the sim's typed errors as they come back. There is no shared `View` trait yet; add one if the screens' shapes converge.
 
 **UI toolkit.** No egui or other third-party UI library. A small bespoke immediate-mode UI draws on the terminal cell grid: boxed frames, list selectors, slot pickers, meters and scrolling logs in a monospace font. That keeps the amber CRT look authentic and the code fully under our control.
 
@@ -237,7 +254,7 @@ Each player owns a private colony that runs locally; stations, markets, reputati
 | Voyage state while in The Slip | Constrained player messages left at stations |
 | | Universe clock |
 
-**The interface.** All game code reaches the universe through one trait. Milestone 5 builds only `on_launch` (in `nexa-sim/src/universe.rs`; `LaunchContext` and `LaunchBriefing` are `nexa-types` structs). The other methods are added when the systems behind them exist: `on_dock` and `submit_trade` with Scrap Barge 77 (milestone 6), `post` with distress calls and Echoes.
+**The interface.** All game code reaches the universe through one trait. Milestone 5 builds only `on_launch` (in `nexa-sim/src/universe.rs`; `LaunchContext` and `LaunchBriefing` are `nexa-types` structs). The other methods are added when the systems behind them exist: `on_dock` and `submit_trade` with Scrap Barge 77 (milestone 7), `post` with distress calls and Echoes.
 
 ```rust
 pub trait Universe {
@@ -270,36 +287,34 @@ pub trait Universe {
 
 **Habits required now (cheap, also good for single-player):**
 
-- [ ] Every off-colony interaction goes through `Universe`
-- [ ] Universe events and posts are serializable `nexa-types` structs
-- [ ] Deterministic sim: seeded `SimRng`, fixed ticks, no wall clock
-- [ ] Integer or fixed-point math for credits, mass, fuel, prices
-- [ ] Stable unique IDs (UUID or ULID) for players, ships, crews, stations, events
+- [x] Every off-colony interaction goes through `Universe`
+- [x] Universe events and posts are serializable `nexa-types` structs
+- [x] Deterministic sim: seeded `SimRng`, fixed ticks, no wall clock
+- [x] Integer or fixed-point math for credits, mass, fuel, prices
+- [x] Stable IDs for content (`cal`, `hab_01`, `barge_77`: short text slugs). Players, ships and events that cross the server get UUIDs or ULIDs when `nexa-server` exists
 - [ ] Command log recorded per voyage (also gives replays and bug reports)
 
 ## Content, data formats and saves
 
-All content is RON (Rusty Object Notation) loaded through `serde`, validated at startup, and hot-reloadable on desktop during development.
+All content is RON (Rusty Object Notation) loaded through `serde` and validated when parsed. Today each file is compiled into `nexa-sim` with `include_str!`, so an edit needs a rebuild; hot reload on desktop can come later through the `platform` module.
 
 | File | Holds |
 | --- | --- |
-| `content/machines.ron` | Machine kinds, nominal bands, failure modes, required parts |
-| `content/parts.ron` | Wear parts, mass, base value |
 | `content/mullein.ron` | *The Mullein*: tank, per-leg and Overclock burns, ECM pods, route and transit Sols, outbound ore-crate manifest, starting credits |
 | `content/crew.ron` | The six crew: skills, traits, adult flag, bunk hab; pilot minimum, stress and morale rates and thresholds |
 | `content/hazards.ron` | Slip hazard events, options, checks, outcomes, delay ranges |
-| `content/stations/scrap_barge_77.ron` | Vendors, stock, patience, dialogue, the prospector dilemma |
-| `content/epochs.ron` | Atmosphere targets and epoch requirements |
-| `content/landing_ash_plain.ron` | Hand-built 32 x 32 active map, non-navigable backdrop, initial damage |
+| `content/stations/scrap_barge_77.ron` (*planned*, milestone 7) | Vendors, stock, patience, dialogue, the prospector dilemma |
+| `content/epochs.ron` (*planned*, milestone 8) | Atmosphere targets and epoch requirements |
+| `content/landing_ash_plain.ron` | Hand-built 32 x 32 active map; each module's machine (tolerance band, wear rate, starting wear), power and heat; heat lines; the starting parts stock |
 | `content/standing_orders.ron` | Standing Orders tuning (terminal memory, re-arm margins) and preset card sets |
-| `assets/manifest.ron` | Asset ID → fallback chain |
-| `audio/cues.ron` | Event → sound cue |
+| `assets/manifest.ron` (*planned*, Layer 1) | Asset ID → fallback chain |
+| `audio/cues.ron` (*planned*, Layer 1) | Event → sound cue |
 
-**Saves.** A save is the serialized `World`, `SimRng` state included, written through the `Storage` trait. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
+**Saves.** A save is the serialized `World`, `SimRng` state included. The sim side is built and tested (a `World` round-trips through RON and old saves load); the game can't write or load one yet. That arrives with a `Storage` trait in the `platform` module: files on desktop, browser storage on web. Every save carries a `format_version`; a `migrate()` step upgrades old saves so playtesters don't lose progress across updates. The same format later serves as a server-side replay input.
 
 A save also keeps the content it was made with: each module's `ModuleDef` and the Standing Orders tuning (terminal memory, re-arm margins). So a save replays the same after a balance change, and edits to `content/` reach only new games. The ship's definition and a voyage's hazard content are kept the same way. Saves from before milestone 5 get a fixed default RNG seed, the shipped *Mullein* on the pad and the shipped starting credits. `format_version` and `migrate()` aren't built yet; when they are, `migrate()` is where a deliberate rebalance reaches old saves.
 
-**Validation.** A `nexa-sim` test loads every content file and checks cross-references (a machine's required part exists, every hazard option has a valid check). Broken content fails the build, not the playtest.
+**Validation.** Every content file is checked when it loads (crew, hazards, ship, colony layout, orders tuning), cross-references included (every bunk is a hab, every specialist bonus names a crew member). Tests load the shipped files, so broken content fails `cargo test`, not the playtest.
 
 ## Testing strategy and AI-coding workflow
 
@@ -309,10 +324,10 @@ Because the sim is pure and deterministic, most of the game can be tested withou
 
 - **Unit tests** per sim module: tolerance bands, flow routing, Standing Orders evaluation and rendering, skill checks.
 - **Scenario tests**: load a content file, apply a scripted command list, assert on the resulting `World` (e.g. "heater off for 3 Sols freezes the seal").
-- **Snapshot tests** (`insta`): the Black Box log for a fixed seed must match a stored snapshot. Any balance change shows up as a readable diff.
-- **Headless balance runs**: a `nexa-tools` binary plays thousands of seeded voyages with scripted strategies and reports survival rates and margin against the 45-Sol deadline.
+- **Snapshot tests** (`insta`, *planned* with the Black Box in milestone 8): the Black Box log for a fixed seed must match a stored snapshot. Any balance change shows up as a readable diff.
+- **Headless balance runs**: `nexa-tools` runs the colony for N Sols (optionally under an orders preset and a Split) and `--sweep N` flies N seeded voyages per hazard option. Survival rates and margin against the 45-Sol deadline follow once the full loop exists.
 - **Playthrough scripts** (`scripts/`, run by `nexa_sim::script`): line-based player actions and `expect` checks. `nexa-tools --script` plays one headless; `nexa-game --script` plays it through the real screens with key presses and `--screenshot-at MOMENT,... --out DIR` saves PNGs; `--headless` runs it without a window. `--seed N` fixes the game's RNG. `crates/nexa-sim/tests/gdd_invariants.rs` checks the GDD's numbers; rules for unbuilt systems are ignored tests that record the expected values.
-- **Property tests** (`proptest`) on orders and the economy: no command sequence produces negative cargo or fuel, or creates credits from nothing.
+- **Property tests** (`proptest`, *planned*) on orders and the economy: no command sequence produces negative cargo or fuel, or creates credits from nothing.
 
 **Working with AI**
 
@@ -324,23 +339,25 @@ Because the sim is pure and deterministic, most of the game can be tested withou
 
 ## Milestone roadmap
 
-Milestones are ordered, not dated; each ends with something playable or testable. Milestones 1 through 6 are "Slice 0": the whole vertical-slice loop in text.
+Milestones are ordered, not dated; each ends with something playable or testable. Milestones 1 through 8 are "Slice 0": the whole vertical-slice loop in text.
 
 1. **Skeleton.** *(Done.)* Cargo workspace, crates, CI (fmt, test, clippy, WASM check), `CLAUDE.md`, a macroquad window showing an amber character grid with a boot screen and a real-time-with-pause clock.
 2. **Grid and machines.** *(Done.)* Ash Plain map from data, power and heat routing, tolerance states, wear parts. Headless tests first, then an ASCII view.
 3. **Standing Orders.** *(Done.)* Rule-card model, evaluator, terminal editor screen, Caretaker simulation running Sols unattended.
 4. **Crew and the Split.** *(Done.)* Six crew from data, assignments, stress and morale, the Split screen with its two rules.
-5. **The Slip.** Launch, the outbound leg, fuel ledger, cargo integrity, credits, one pirate interdiction resolved by skill checks or a concession (the `check` function and the sim's seeded RNG land here, moved from milestone 4), arrival over Scrap Barge 77 as a holding state, and the colony catching up on the Sols the voyage used. `OfflineUniverse` introduced here with `on_launch` only.
-6. **Scrap Barge 77.** Docking, haggle session with Silas Vane, Integrity and Heat, the prospector dilemma, Echo seed. Return leg (respecting the round trip's random-delay cap), landing, Black Box reconciliation, filters installed, first-rain milestone, Base Hypoxia fail state. **Slice 0 complete: playtest the loop as text.**
-7. **Layer 1.** CRT shader, synthesized sound effects and ambience.
-8. **Layer 2.** Vector panels for cockpit, haggle and Black Box; code-drawn isometric tiles.
-9. **Web build.** WASM port, browser storage, playable link for testers.
-10. **Shared universe.** `nexa-server`, `OnlineUniverse`, accounts, constrained messages, server-side NPC traffic.
-11. **Layer 3.** Portraits, painted scenes, music as time and budget allow.
+5. **The Slip.** *(Done.)* Launch, the outbound leg, fuel ledger, cargo integrity, credits, one pirate interdiction resolved by skill checks or a concession (the `check` function and the sim's seeded RNG land here, moved from milestone 4), arrival over Scrap Barge 77 as a holding state, and the colony catching up on the Sols the voyage used. `OfflineUniverse` introduced here with `on_launch` only. Followed by the testing harness: playthrough scripts (`scripts/`), `--seed`, `--script`, `--headless` and `--screenshot-at` in the game, and `gdd_invariants` checking the GDD's numbers.
+6. **Colony gaps.** Smelter ore fills the manifest; scrubber saturation counts down to Sol 45; the Base Hypoxia stages (degraded, unconscious, lost) run in the sim. Retune the Ash Plain and the `caretaker` preset for 10 crates by Sol 10.
+7. **Scrap Barge 77.** Docking (`Universe::on_dock`), haggle session with Silas Vane through `check`, Integrity and Heat, orbital audits (uncapped player-caused delay), the prospector dilemma, Echo seed.
+8. **Homecoming.** Return leg (respecting the round trip's random-delay cap, Overclock on 150 L), landing, Black Box reconciliation, Carbon Filters installed (scrubber reset), first-rain milestone, the autopsy log on the cockpit terminal. **Slice 0 complete: playtest the loop as text.**
+9. **Layer 1.** CRT shader, synthesized sound effects and ambience.
+10. **Layer 2.** Vector panels for cockpit, haggle and Black Box; code-drawn isometric tiles.
+11. **Web build.** WASM port, browser storage, playable link for testers.
+12. **Shared universe.** `nexa-server`, `OnlineUniverse`, accounts, constrained messages, server-side NPC traffic.
+13. **Layer 3.** Portraits, painted scenes, music as time and budget allow.
 
 ## Design decisions
 
-All eight spec questions are decided. Three were adjusted to fit this architecture (marked below). The game design doc (`docs/game-design.md`) reflects all of them.
+All eight spec questions are decided, plus the post-milestone-5 review below the table. Three were adjusted to fit this architecture (marked below). The game design doc (`docs/game-design.md`) reflects all of them.
 
 | Topic | Decision | Architecture note |
 | --- | --- | --- |
@@ -351,4 +368,10 @@ All eight spec questions are decided. Three were adjusted to fit this architectu
 | Epoch 01 exit | Carbon filters only. Bore valves move to the start of Epoch 02 | Done in the GDD |
 | Day budget | Nominal run 23 Sols (10 ground, 5 + 5 flight, 3 station). Random hazard delays capped at +12 Sols, so the worst random case lands on Sol 35 | **Adjusted:** the cap covers random hazards only. Player-caused audits and penalties stack uncapped, so one 14-Sol audit after bad luck lands on Sol 49 and loses the colony |
 | Fail state | Hypoxia Sols 45 to 47, crew coma Sol 48, hard failure from Sol 49 with an autopsy report in the Black Box log | Effective deadline is Sol 48. **Adjusted:** the discovery is a cockpit terminal readout over the base umbilical link: scrubber saturation, O2 candles exhausted, biometric flatlines, then zero carrier on the Caretaker frequency |
+| Prospector dilemma | The prospector always asks for 200 L. The player can give at most what still leaves the 350 L return burn (150 L after an outbound Overclock), or refuse | The station never lets a gift strand *The Mullein*; the terminal shows the most she can spare |
+| Return-leg Overclock | Available with 150 L in the tank; may run her dry | The return leg's 350 L is burned at launch, so no reserve is held back |
+| Silicon | The smelter produces the ore crates; 10 by Sol 10 in a well-run colony | Manifest becomes colony output, tying Standing Orders to trade value |
+| Scrubber deadline | Saturation meter on `scrubber_01`, full on Sol 45; filters reset it | No oxygen network on the grid |
+| Hypoxia slowdown | "Movement slows 50%" becomes half production and slower repairs | Nothing walks in the sim; movement can return with the isometric layer |
+| ECM pods | One pod | Using it outbound leaves none for the return |
 | Universe clock (shared universe) | One Master Universe Day per real 24 hours. Each colony's Sols stay local and pause with the player; the shared world is touched only at Slip entry and docking, stamped with the current universe day | Matches the sync-at-docking design. Later idea: colonies that reach Epoch 04 become permanent trade nodes on the shared star chart |

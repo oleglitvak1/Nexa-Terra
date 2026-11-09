@@ -24,38 +24,38 @@ fn first_unbuilt(text: &str) -> usize {
         .iter()
         .find(|l| matches!(l.step, Step::NotBuilt(_)))
         .map(|l| l.number)
-        .expect("script reaches milestone 6")
+        .expect("script runs up to the unbuilt part")
 }
 
-fn stops_at_milestone_6(text: &str) {
+fn stops_at_the_dock(text: &str) {
     match play(text) {
         Some((line, RunError::NotBuilt(_))) => assert_eq!(line, first_unbuilt(text)),
-        other => panic!("expected to stop at milestone 6, got {other:?}"),
+        other => panic!("expected to stop at the dock (not built yet), got {other:?}"),
     }
 }
 
 #[test]
 fn a_nominal() {
-    stops_at_milestone_6(include_str!("../../../scripts/playthrough/a_nominal.nts"));
+    stops_at_the_dock(include_str!("../../../scripts/playthrough/a_nominal.nts"));
 }
 
 #[test]
 fn b_worst_luck() {
-    stops_at_milestone_6(include_str!(
+    stops_at_the_dock(include_str!(
         "../../../scripts/playthrough/b_worst_luck.nts"
     ));
 }
 
 #[test]
 fn c_audit_hypoxia() {
-    stops_at_milestone_6(include_str!(
+    stops_at_the_dock(include_str!(
         "../../../scripts/playthrough/c_audit_hypoxia.nts"
     ));
 }
 
 #[test]
 fn d_prospector() {
-    stops_at_milestone_6(include_str!(
+    stops_at_the_dock(include_str!(
         "../../../scripts/playthrough/d_prospector.nts"
     ));
 }

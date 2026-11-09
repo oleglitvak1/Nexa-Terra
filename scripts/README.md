@@ -11,6 +11,6 @@ cargo run -p nexa-game -- --script scripts/playthrough/a_nominal.nts \
 ```
 
 Exit codes: 0 ran to the end, 1 a step failed, 2 reached a system that isn't
-built yet. Until milestone 6 every playthrough stops at its `dock` line with
-exit 2; `crates/nexa-sim/tests/playthroughs.rs` checks that everything before
+built yet. Until docking exists (milestone 7) every playthrough stops at its `dock` line
+with exit 2; `crates/nexa-sim/tests/playthroughs.rs` checks that everything before
 it passes.

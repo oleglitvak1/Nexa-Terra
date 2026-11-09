@@ -162,10 +162,9 @@ impl Driver {
                 }
                 _ => self.fail(format!("nothing to close on the {on:?} screen")),
             },
-            Step::NotBuilt(verb) => Act::Fail(
-                format!("line {}: not built yet (milestone 6): {verb}", self.line),
-                2,
-            ),
+            Step::NotBuilt(verb) => {
+                Act::Fail(format!("line {}: not built yet: {verb}", self.line), 2)
+            }
         }
     }
 

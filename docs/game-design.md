@@ -101,9 +101,9 @@ Space flight is represented through a tactile cockpit interface and an emergency
 * *Option 3: Economic Concession / Bluff (Social-Dependent):* Dump raw cargo, pay a credit ransom, or bluff using false transponder codes (Negotiator check).
 
 
-* *Specialists and supplies:* the best qualified member of the flight crew makes each check, and a flight specialist aboard adds a bonus: Cal on the countermeasure, Jonathan on the Overclock Burn, Dax on the bluff. ECM pods are limited: *The Mullein* carries a few and each countermeasure spends one, so with none left the option is gone. A ransom needs the credits to pay it.
+* *Specialists and supplies:* the best qualified member of the flight crew makes each check, and a flight specialist aboard adds a bonus: Cal on the countermeasure, Jonathan on the Overclock Burn, Dax on the bluff. ECM pods are limited: *The Mullein* carries one, and the countermeasure spends it, so using it outbound leaves none for the return leg. A ransom needs the credits to pay it.
 * *Outcomes:* a check succeeds, partly succeeds or fails. A partial escape still costs something small (some cargo integrity or a minor delay); a failure costs more.
-* **Fuel Ledger (Vertical Slice):** *The Mullein* carries a 1,000 L reaction mass tank. A clean round trip burns 700 L (350 L each way), leaving a 300 L reserve. One Overclock Burn costs 150 L. All fuel is tracked in whole liters.
+* **Fuel Ledger (Vertical Slice):** *The Mullein* carries a 1,000 L reaction mass tank. A clean round trip burns 700 L (350 L each way), leaving a 300 L reserve. One Overclock Burn costs 150 L. Outbound, an Overclock must leave the 350 L for the return leg; on the return leg (whose 350 L is burned at launch) it only needs 150 L in the tank and may run her dry. All fuel is tracked in whole liters.
 * **Systemic Failure Impacts:** Encounters do not deal generic hull hit points; they cause cargo seal blowouts, fuel leaks, or transit delays that eat directly into the colony's ground survival buffers. Random hazard delays run +5 to +7 Sols (minor) or +7 to +10 Sols (severe drift), and are capped at **+12 Sols** per round trip so bad luck alone never kills the colony.
 
 ### C. Station Commerce & Morale Matrix
@@ -131,7 +131,7 @@ Stations are compact, atmospheric hubs consisting of the **Gantry**, the **Excha
 
 ```
 
-1. **Epoch 01 (Ash & Slag):** Closed-circuit life support; mining local silicates and sulfur; gathering frozen regolith core ice. Advancing requires off-world **Micro-Porous Carbon Filters**. Installing them stabilizes the scrubbers and triggers the first sulfur-acid drizzle (the vertical slice's ending milestone).
+1. **Epoch 01 (Ash & Slag):** Closed-circuit life support whose scrubbers saturate on Sol 45; smelting local silicates into raw-silicon ore crates for trade; gathering frozen regolith core ice. Advancing requires off-world **Micro-Porous Carbon Filters**. Installing them stabilizes the scrubbers and triggers the first sulfur-acid drizzle (the vertical slice's ending milestone).
 2. **Epoch 02 (Cold Condensation):** Industrial venting of greenhouse gases heats the crust, releasing corrosive acid slush. The epoch opens with importing **High-Pressure Bore Valves**, which unlock deep-aquifer heating. Advancing requires importing bulk **Liquid Nitrogen Canisters** and **Catalytic Crackers** to stabilize the atmosphere.
 3. **Epoch 03 (The Moss Line):** Rain patterns wash sulfur out of the sky; soil remains chemically hostile. Advancing requires importing **Genetically Stabilized Lichen Vats** and **Nitrifying Micro-Fauna** transported in powered bio-holds.
 4. **Epoch 04 (Open Canopy — Victory Condition):** Surface air reaches human-survivable pressure and non-toxic thresholds. Decommission base airlocks, open civilian landing beacons, and step onto the surface without helmets.
@@ -167,18 +167,20 @@ PHASE 1: LANDFALL                 PHASE 2: THE SPLIT                PHASE 3: THE
 | Worst-case random delays (cap) | +12 Sols | 35 | 10 |
 
   Player-caused audits and penalties (7–14 Sols) stack on top of the cap. One 14-Sol audit after maximum bad luck lands on Sol 49 and loses the colony.
-* **Fail state (Base Hypoxia):** Sols 45–47 the scrubbers saturate, emergency O2 candles burn power, movement slows 50% and Maya's vitals go critical. Sol 48 the ground crew fall unconscious and production stops. From Sol 49, *The Mullein* docks to silence and the cockpit terminal prints the base log over the umbilical link (scrubber saturation, O2 candles exhausted, biometric flatlines, then `ZERO CARRIER DETECTED ON CARETAKER FREQUENCY`), followed by the autopsy report and a reload prompt.
+* **The scrubber clock:** the life-support scrubber carries a saturation meter that fills each hour it runs and is full on Sol 45; hours without power make it worse. Installing the imported Carbon Filters resets it.
+* **Ore:** the smelter turns out raw-silicon ore crates while it runs in its nominal band. A well-run colony fills *The Mullein*'s 10-crate (10-ton) manifest by the nominal Sol-10 launch while keeping the habs warm; launching with fewer is allowed and leaves less to trade.
+* **Fail state (Base Hypoxia):** Sols 45–47 the scrubbers saturate, emergency O2 candles burn power, the smelter runs at half rate, repairs slow, crew stress climbs and Maya's vitals go critical. Sol 48 the ground crew fall unconscious and production stops. From Sol 49, *The Mullein* docks to silence and the cockpit terminal prints the base log over the umbilical link (scrubber saturation, O2 candles exhausted, biometric flatlines, then `ZERO CARRIER DETECTED ON CARETAKER FREQUENCY`), followed by the autopsy report and a reload prompt.
 
 ---
 
 ### Step-by-Step Implementation Roadmap
 
-Detailed, ordered milestones live in *Nexa Terra — Technical Architecture*. The slice is first built entirely as an amber text terminal ("Slice 0"), then layered with a CRT shader, synthesized audio, vector panels and isometric tiles.
+Detailed, ordered milestones live in *Nexa Terra — Technical Architecture* (`docs/architecture.md`); the phases below group the work by system, not by build order. Panel screens and overlays are Layer 2 work. The slice is first built entirely as an amber text terminal ("Slice 0"), then layered with a CRT shader, synthesized audio, vector panels and isometric tiles.
 
 #### Phase 1: Mechanics & The Grid Engine
 
-* Implement the colony grid with resource routing (Power, Thermal Fluid, Oxygen). ASCII top-down first; fixed-angle isometric tiles at the visual layer.
-* Code the machine tolerance logic: Nominal, Overheat, Freeze, and Burnout states.
+* Implement the colony grid with resource routing (Power, Thermal Fluid); oxygen is the scrubber's saturation meter, not a network. ASCII top-down first; fixed-angle isometric tiles at the visual layer.
+* Code the machine tolerance logic: Nominal, Overheat, Freeze, and Burnout states. The smelter produces ore crates while nominal.
 * Build the data schema for discrete manufactured wear parts (*Tungsten Filaments*, *Viton Seals*, *Carbon Filters*).
 * Implement Standing Orders as typed rule cards (trigger, action, priority) and the evaluator for the automated Caretaker Shift.
 
@@ -194,7 +196,7 @@ Detailed, ordered milestones live in *Nexa Terra — Technical Architecture*. Th
 * Build **Scrap Barge 77** as three connected panel scenes (The Docking Gantry, The Exchange Counter, The Spigot Back Corridor).
 * Implement the Haggle Matrix against the merchant **Silas "Grip" Vane**, an abrasive, aging scrap broker with a cybernetic ocular rig who runs the reclamation dock. Whoever made the trip negotiates with their own skills and dialogue options; Dax is the strongest negotiator.
 * Track moral standing (*Commercial Integrity* vs. *Station Heat*).
-* Script the moral dilemma: a stranded prospector begs for 200 L of reaction mass. Keeping it leaves the 300 L reserve, enough for an Overclock Burn on the return leg. Giving it leaves 100 L: enough to get home on a clean run, but not enough to burn, so a return interdiction must be solved by dumping cargo, paying, bluffing or a risky countermeasure roll. (If an outbound Overclock was already used, the margin is tighter still.)
+* Script the moral dilemma: a stranded prospector begs for 200 L of reaction mass. Keeping it leaves the 300 L reserve, enough for an Overclock Burn on the return leg. Giving it leaves 100 L: enough to get home on a clean run, but not enough to burn, so a return interdiction must be solved by dumping cargo, paying, bluffing or a risky countermeasure roll. The terminal never lets the gift strand the ship: the player can give at most what still leaves the 350 L return burn. If an outbound Overclock was already used (500 L at the barge), that is 150 L, and nothing is left to burn on the way home.
 * Hook up the "Echo System" trigger to log the player's moral choice for downstream consequences.
 
 #### Phase 4: Systems Integration & The Black Box Reconciliation
@@ -239,7 +241,7 @@ To keep the prototype achievable, strict development boundaries are enforced:
 The prototype is verified as complete when an external playtester, starting with no prior instruction, can:
 
 1. Touch down on Nexa Terra, triage the damaged landing habs, and diagnose the 45-Sol life-support scrubber deadline.
-2. Route power through the grid to extract 10 tons of raw silicon while managing thermal heating lines to prevent frozen seals.
+2. Route power through the grid to keep the smelter running and fill the 10-ton raw-silicon manifest, while managing thermal heating lines to prevent frozen seals.
 3. Split the crew (at least one pilot aboard, at least one adult with Maya), leave adequate Standing Orders for the Caretakers, and launch *The Mullein* into The Slip.
 4. Resolve an in-flight pirate interdiction via the cockpit terminal using a skill check or cargo concession.
 5. Dock at Scrap Barge 77, conduct a multi-turn negotiation with Silas "Grip" Vane (led by Dax or whoever made the trip) to secure replacement Carbon Filters, and resolve a high-stakes charity dilemma.

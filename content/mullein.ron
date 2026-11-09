@@ -13,7 +13,7 @@
     // Chaff/ECM pods for the countermeasure; each use spends one. One pod for
     // a round trip with a hazard each way, so using it outbound is a choice.
     ecm_pods: 1,
-    // The colony's whole purse; a ransom spends it, the haggle (milestone 6) needs it.
+    // The colony's whole purse; a ransom spends it, the haggle (milestone 7) needs it.
     starting_credits: 500,
     route: (
         destination: "barge_77",
