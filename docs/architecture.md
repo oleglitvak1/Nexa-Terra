@@ -1,6 +1,6 @@
 # Nexa Terra — Technical Architecture
 
-Source of truth for this file in the repo. Mirrors the "Nexa Terra — Technical Architecture" doc in Claude (Nov 2026).
+This repo copy is the source of truth. An older "Nexa Terra — Technical Architecture" doc in Claude (Nov 2026) is no longer kept in sync; when they differ, this file wins.
 
 ## Summary and key decisions
 
