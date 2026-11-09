@@ -18,7 +18,8 @@ On Linux, macroquad needs `libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`.
 macOS and Windows need nothing extra.
 
 Controls: any key boots the terminal; `Space` pauses, `1` / `2` / `3` set speed,
-`O` opens the Standing Orders terminal, `Esc` backs out of a screen or quits.
+`O` opens the Standing Orders terminal, `C` the crew screen (the Split), `L` launches
+*The Mullein*, `Esc` backs out of a screen or quits.
 
 ## Layout
 
@@ -29,8 +30,10 @@ crates/
   nexa-game/    macroquad client: terminal renderer and screens
   nexa-tools/   headless dev tools
 content/        game data (RON)
-assets/         fonts, sprites, shaders, asset manifest
-audio/          sound cues and generated sounds
+scripts/        playthrough scripts (see scripts/README.md)
+docs/           game design and architecture
+assets/         fonts, sprites, shaders, asset manifest (from Layer 1; empty now)
+audio/          sound cues and generated sounds (from Layer 1; empty now)
 ```
 
 See `CLAUDE.md` for engineering rules and checks.

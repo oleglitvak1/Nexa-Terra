@@ -11,7 +11,7 @@ fly overclock
 expect sol 25
 expect random-delay 10
 close
-# Milestone 6 from here.
+# Not built yet from here (docking: milestone 7).
 dock
 haggle salt-the-crates          # deception raises Station Heat
 audit 14                        # uncapped: player-caused

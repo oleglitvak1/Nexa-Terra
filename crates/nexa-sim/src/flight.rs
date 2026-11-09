@@ -3,7 +3,7 @@
 //!
 //! While a voyage is in transit the colony is held (`World::tick` does
 //! nothing); arrival runs it through every Sol the voyage used. Milestone 5
-//! ends there: the ship holds over the station until milestone 6 docks her.
+//! ends there: the ship holds over the station until docking (milestone 7).
 
 use crate::check::{check, Outcome, Roll};
 use crate::crew::Crew;
@@ -14,7 +14,7 @@ use crate::{SimEvent, World};
 use nexa_types::{CrewId, HazardId, LaunchContext, SlipEvent, StationId, Tick, TICKS_PER_SOL};
 use serde::{Deserialize, Serialize};
 
-/// Which way the ship is flying. The return leg comes with milestone 6.
+/// Which way the ship is flying. The return leg comes with milestone 8.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Leg {
     Outbound,
@@ -86,7 +86,7 @@ pub struct Resolution {
     pub paid: Paid,
 }
 
-/// One trip through The Slip. Kept after arrival: the return leg (milestone 6)
+/// One trip through The Slip. Kept after arrival: the return leg (milestone 8)
 /// continues it and shares its random-delay cap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Voyage {
@@ -316,7 +316,7 @@ impl std::fmt::Display for Unavailable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlightError {
     NoVoyage,
-    /// Arrived and holding: nothing to fly until milestone 6.
+    /// Arrived and holding: nothing to fly until the return leg (milestone 8).
     NotInTransit,
     HazardPending,
     NoHazardPending,

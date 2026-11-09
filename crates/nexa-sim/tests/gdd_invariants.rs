@@ -1,6 +1,6 @@
 //! The numbers and rules `docs/game-design.md` states, checked against the
 //! shipped content and the sim. Each test quotes the rule it checks. Rules for
-//! systems that don't exist yet (milestone 6) are `#[ignore]`d with the
+//! systems that don't exist yet (milestones 6 to 8) are `#[ignore]`d with the
 //! expected values in the reason, so they're recorded but don't fail.
 //!
 //! The GDD's pacing rule (1 h = 5 s at 1x, pause/1x/2x/3x) is presentation
@@ -167,10 +167,11 @@ fn an_overclock_must_leave_the_return_legs_fuel() {
 }
 
 #[test]
-#[ignore = "milestone 6: prospector dilemma. Expected: at the station with 650 L, \
+#[ignore = "milestone 7: prospector dilemma. Expected: at the station with 650 L, \
             giving 200 L leaves 450; the return leg burns 350 -> 100 L at the return \
             interdiction, so overclock is unavailable and the ship still lands with \
-            100 L. Keeping it: 300 L on the return leg, overclock available."]
+            100 L. Keeping it: 300 L on the return leg, overclock available. After \
+            an outbound overclock (500 L) at most 150 L can be given."]
 fn prospector_gift_leaves_100_l_enough_to_get_home_but_not_to_burn() {
     unimplemented!("needs docking, the prospector dilemma and the return leg")
 }
@@ -233,7 +234,7 @@ fn random_delays_never_pass_twelve_sols() {
 }
 
 #[test]
-#[ignore = "milestone 6: audits. Expected: a player-caused audit adds 7..=14 Sols on \
+#[ignore = "milestone 7: audits. Expected: a player-caused audit adds 7..=14 Sols on \
             top of the random cap, so random 12 + audit 14 = 26 Sols of delay."]
 fn player_caused_audits_are_not_covered_by_the_cap() {
     unimplemented!("needs Station Heat and orbital audits")
@@ -244,7 +245,7 @@ fn player_caused_audits_are_not_covered_by_the_cap() {
 #[test]
 fn nominal_outbound_arrives_on_sol_15() {
     // GDD 6 day budget: ground 10, flight 5 out. (Station 3 + 5 back -> Sol 23
-    // needs milestone 6.)
+    // needs milestones 7 and 8.)
     let mut world = ready(7);
     while world.now.sol() < 10 {
         world.tick();
@@ -278,14 +279,14 @@ fn worst_random_outbound_lands_well_inside_the_deadline() {
 }
 
 #[test]
-#[ignore = "milestone 6: return leg, station Sols. Expected: nominal run (10 ground, 5 \
+#[ignore = "milestone 8: return leg, station Sols. Expected: nominal run (10 ground, 5 \
             out, 3 docked, 5 back) lands on Sol 23; with the +12 cap Sol 35."]
 fn nominal_round_trip_lands_on_sol_23() {
     unimplemented!("needs docking and the return leg")
 }
 
 #[test]
-#[ignore = "milestone 6: audits + hypoxia. Expected: 35 + a 14-Sol audit lands on Sol \
+#[ignore = "milestones 6-8: audits + hypoxia. Expected: 35 + a 14-Sol audit lands on Sol \
             49 and the colony is lost."]
 fn a_14_sol_audit_after_max_bad_luck_loses_the_colony_on_sol_49() {
     unimplemented!("needs audits and the hypoxia fail state")
@@ -294,7 +295,7 @@ fn a_14_sol_audit_after_max_bad_luck_loses_the_colony_on_sol_49() {
 // ---------------------------------------------------------------- Hypoxia
 
 #[test]
-#[ignore = "milestone 6: Base Hypoxia. Expected: Sols 45-47 degraded (movement -50%, O2 \
+#[ignore = "milestone 6: Base Hypoxia. Expected: Sols 45-47 degraded (half production, O2 \
             candles burn power), Sol 48 ground crew unconscious and production stops, \
             Sol 49+ colony lost and the autopsy log printed."]
 fn hypoxia_runs_degraded_then_unconscious_then_lost() {

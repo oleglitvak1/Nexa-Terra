@@ -27,17 +27,18 @@ cargo run -- --script FILE --screenshot-at hazard,sol:12 --out shots    # script
 cargo test --workspace                      # all tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo build -p nexa-sim --target wasm32-unknown-unknown   # web-safety check
+cargo build -p nexa-sim --target wasm32-unknown-unknown   # web-safety checks (CI runs both)
+cargo build -p nexa-game --target wasm32-unknown-unknown
 ```
 
-Every change must end with test, clippy (no warnings), fmt, and the WASM check green.
+Every change must end with test, clippy (no warnings), fmt, and both WASM checks green.
 
 ## Crates and dependency rules
 
 | Crate | Role | May depend on |
 | --- | --- | --- |
-| `nexa-types` | Shared serde data: IDs, time units, commands, events, Universe messages | serde only |
-| `nexa-sim` | Pure deterministic rules: grid, machines, crew, orders, flight, station, echoes | `nexa-types`, small pure crates |
+| `nexa-types` | Shared serde data: IDs, time units, colony commands, Universe messages | serde only |
+| `nexa-sim` | Pure deterministic rules and `SimEvent`s: grid, machines, crew, orders, flight, scripts; later station, echoes | `nexa-types`, small pure crates |
 | `nexa-game` | Window, input, audio, terminal renderer, screens (views) | `nexa-sim`, `nexa-types`, macroquad |
 | `nexa-tools` | Headless dev binaries: balance runs, content checks, generators | `nexa-sim`, `nexa-types` |
 | `nexa-server` | Shared universe service (later, not yet created) | `nexa-sim`, `nexa-types` |

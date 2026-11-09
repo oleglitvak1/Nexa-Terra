@@ -35,7 +35,7 @@ use crate::{SimEvent, World};
 use nexa_types::{CrewId, ModuleId, TICKS_PER_SOL};
 use std::collections::BTreeMap;
 
-/// Verbs a script may use for systems that don't exist yet (milestone 6).
+/// Verbs a script may use for systems that don't exist yet (milestones 6 to 8).
 pub const NOT_BUILT: &[&str] = &[
     "dock",
     "haggle",
@@ -282,7 +282,7 @@ impl std::fmt::Display for RunError {
         match self {
             RunError::Refused(e) => write!(f, "refused: {e}"),
             RunError::Expectation(e) => write!(f, "expectation failed: {e}"),
-            RunError::NotBuilt(v) => write!(f, "not built yet (milestone 6): {v}"),
+            RunError::NotBuilt(v) => write!(f, "not built yet: {v}"),
         }
     }
 }
