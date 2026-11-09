@@ -32,7 +32,8 @@ That trigger is dropped.
 | What a posture sets | Its cards **and** guard settings: loading one sets both, so one pick gives the whole setup. A posture may leave the guard alone by not naming it. |
 | Sol 45 boundary | The meter fills at the end of the 1,170th running hour; Degraded's effects start the hour after. A run of exactly 45 Sols sees `ScrubberSaturated` and nothing else of hypoxia. |
 | Keeping steps green | Steps 2 to 8 change no balance: the shipped manifest stays pre-loaded with 10 crates and the smelter ships with no guard. Step 9 is the one balance commit (see *Test suite impact*). |
-| Plain-language failure causes | Deferred to milestone 8's Black Box ("smelter froze on Sol 5: card 1 shut it off at 25% power and nothing restarted it"). M6 keeps the events the Black Box will need. |
+| Base log | Readable at a glance (seen in the step-2 playthrough: from Sol 8 the `caretaker` run is almost all `ORDER 2 FIRED` / `ORDER 3 FIRED`, every two hours). A fired card says what it did in plain words, routine repeats fold into one counted line, and anything that changes the colony's state always gets its own line. Presentation only; the sim's events don't change. |
+| Plain-language failure causes | What a card did is in plain words from M6 (base log). Chains of cause are deferred to milestone 8's Black Box ("smelter froze on Sol 5: card 1 shut it off at 25% power and nothing restarted it"). M6 keeps the events the Black Box will need. |
 | Playtest early | Show the orders screen (postures, guard, forecast) to one or two non-programmers at the end of M6, not only at the M8 playtest. |
 
 ## What the code shows today
@@ -227,6 +228,21 @@ Each step ends green on test, clippy, fmt and both WASM builds, then commits.
       that updates when the cards change.
     - Launch confirmation: crates aboard (warning below a full hold) and the
       forecast summary.
+    - Base log (`colony_view.rs`):
+      - A fired card says what it did, from the card in the event, e.g.
+        `CARETAKER: SHUT DOWN SMELTER_01, STARTED HEATER_02, HEAT TO HAB_01`,
+        not `ORDER 1 FIRED`.
+      - Routine lines (card firings, guard pauses and resumes, Sol starts) fold:
+        a line whose text matches one of the last few routine lines updates
+        that line's count and time span instead of adding one, e.g.
+        `S008 H18-S009 H24 CARETAKER: HEAT TO HAB_02 x12`. Sol starts don't
+        break a fold.
+      - Anything that changes the colony's state (a machine state change, a
+        stress level, a crate loaded, the scrubber, hypoxia, a refused order)
+        always gets its own line and ends the fold, so it is never buried.
+      - Tests: the shipped `caretaker` run from Sol 8 to Sol 10 fits on one
+        screen of log; a machine failure in the middle of a fold still shows
+        as its own line; the voyage catch-up summary still counts every firing.
     - Check with `--script ... --screenshot-at forecast,hypoxia,lost`.
 12. **Close out.** Mark M6 done in the roadmap; update `scripts/README.md`.
     Run the early playtest with one or two non-programmers and write down what
@@ -236,6 +252,8 @@ Each step ends green on test, clippy, fmt and both WASM builds, then commits.
 
 - A new player can pick *Balanced*, launch on Sol 10 with 10 crates and see a
   forecast that the base holds to Sol 45, without building a card.
+- The base log of a `caretaker` run reads in plain words, with routine card
+  firings folded instead of filling the screen.
 - The meter is full on Sol 45 under nominal running.
 - Hypoxia goes Degraded, Unconscious, Lost on Sols 45, 48, 49 and leaves an autopsy.
 - The four existing playthroughs reach their `dock` line; `e_hypoxia` plays to its end.
