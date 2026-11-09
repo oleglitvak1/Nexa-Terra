@@ -24,7 +24,7 @@
     // Crates the hold takes: ten tons of raw silicon.
     hold_crates: 10,
     // Aboard at landfall. Milestone 6 empties this once the smelter fills the
-    // hold (docs/milestone-6-plan.md, step 9).
+    // hold (docs/milestone-6-plan.md, step 10).
     manifest: [
         (id: "crate_01", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),
         (id: "crate_02", cargo: "raw silicon", mass_kg: 1000, integrity_pct: 100),

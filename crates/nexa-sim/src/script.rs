@@ -330,7 +330,7 @@ pub fn load_preset(world: &mut World, name: &str) -> Result<(), RunError> {
         .get(name)
         .ok_or_else(|| RunError::Refused(format!("no preset named {name:?}")))?;
     // Guards are checked here but applied once modules keep a guard setting
-    // (milestone 6, step 5); no shipped posture names one before then.
+    // (milestone 6, step 6); no shipped posture names one before then.
     preset
         .check(&world.colony, def.tuning)
         .map_err(|e| RunError::Refused(format!("preset {name}: {e}")))?;

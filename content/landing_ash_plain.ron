@@ -82,7 +82,7 @@
                 tolerance: (min_centi_c: -500, max_centi_c: 8000),
                 wear_bp_per_hour: 130,
             )),
-            // Made only while Nominal. First-pass rate; retuned in milestone 6 step 9.
+            // Made only while Nominal. First-pass rate; retuned in milestone 6 step 10.
             ore: Some((kg_per_hour: 50, crate_kg: 1000, cargo: "raw silicon")),
         ),
     ],
