@@ -4,6 +4,7 @@ use crate::terminal::{Ink, Terminal};
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::grid::Tile;
 use nexa_sim::orders::format_centi_c;
+use nexa_sim::ship::Ship;
 use nexa_sim::SimEvent;
 use nexa_types::Tick;
 
@@ -67,6 +68,9 @@ pub fn log_line(at: Tick, event: &SimEvent) -> String {
         SimEvent::SplitConfirmed { flight } => {
             format!("{at} SPLIT CONFIRMED {} FLY", flight.len())
         }
+        SimEvent::OreCrateLoaded { id, crates } => {
+            format!("{at} {} LOADED, {crates} ABOARD", id.to_uppercase())
+        }
         SimEvent::CrewStressChanged { crew, level } => format!(
             "{at} {} {}",
             crew.as_str().to_uppercase(),
@@ -125,8 +129,23 @@ pub fn draw_map(t: &mut Terminal, colony: &Colony, blink: bool) {
     }
 }
 
-/// Grid power bar and one status line per module; returns the next free row.
-pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
+/// The ground stockpile against a crate's mass, and the hold. Back on the pad
+/// with room aboard, the stockpile is the next crate filling; otherwise it
+/// can pass a crate's mass. `None` without an ore producer.
+pub fn ore_line(colony: &Colony, ship: &Ship) -> Option<String> {
+    let ore = colony.ore_def()?;
+    Some(format!(
+        "ORE {}/{} kg  CRATES {}/{}",
+        colony.ore_kg(),
+        ore.crate_kg,
+        ship.cargo().len(),
+        ship.def().hold_crates
+    ))
+}
+
+/// Grid power bar, the ore line and one status line per module; returns the
+/// next free row.
+pub fn draw_status(t: &mut Terminal, colony: &Colony, ship: &Ship, top: usize) -> usize {
     let pct = colony.power_percent() as usize;
     let filled = (pct * POWER_BAR_WIDTH / 100).min(POWER_BAR_WIDTH);
     let bar = format!(
@@ -140,6 +159,9 @@ pub fn draw_status(t: &mut Terminal, colony: &Colony, top: usize) -> usize {
         Ink::Amber
     };
     t.put_str(PANEL_COL, top, &bar, bar_ink);
+    if let Some(ore) = ore_line(colony, ship) {
+        t.put_str(PANEL_COL, top + 1, &ore, Ink::Amber);
+    }
 
     let header = format!(
         "{:<12}{:<9}{:>7} {:>4}  {}",
@@ -326,6 +348,43 @@ mod tests {
         );
         // The log panel is 42 columns, the last one margin.
         assert!(lines.iter().all(|l| l.len() <= 41), "{lines:?}");
+    }
+
+    #[test]
+    fn the_ore_line_shows_the_stockpile_and_the_hold() {
+        let mut world = World::landfall();
+        world.stock_hold(0).unwrap();
+        for _ in 0..13 {
+            world.tick();
+        }
+        let line = ore_line(&world.colony, &world.ship);
+        assert_eq!(line.as_deref(), Some("ORE 650/1000 kg  CRATES 0/10"));
+        let mut t = Terminal::new(80, 36);
+        draw_status(&mut t, &world.colony, &world.ship, 0);
+        let row: String = (0..28)
+            .map(|c| t.get(PANEL_COL + c, 1).unwrap().ch)
+            .collect();
+        assert_eq!(row, "ORE 650/1000 kg  CRATES 0/10");
+
+        // The shipped hold is full, so ore piles up past a crate.
+        let mut world = World::landfall();
+        for _ in 0..26 {
+            world.tick();
+        }
+        let line = ore_line(&world.colony, &world.ship);
+        assert_eq!(line.as_deref(), Some("ORE 1300/1000 kg  CRATES 10/10"));
+    }
+
+    #[test]
+    fn log_lines_name_the_crate_and_the_count_aboard() {
+        let event = SimEvent::OreCrateLoaded {
+            id: "crate_03".into(),
+            crates: 3,
+        };
+        assert_eq!(
+            log_line(Tick(40), &event),
+            "S001 H14 CRATE_03 LOADED, 3 ABOARD"
+        );
     }
 
     #[test]

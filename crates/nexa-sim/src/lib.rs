@@ -187,6 +187,12 @@ pub enum SimEvent {
     SplitConfirmed {
         flight: Vec<CrewId>,
     },
+    /// A full crate of the smelter's ore went aboard *The Mullein* on the
+    /// pad; `crates` is how many she holds now.
+    OreCrateLoaded {
+        id: String,
+        crates: u32,
+    },
     /// A crew member's stress reached a new level.
     CrewStressChanged {
         crew: CrewId,
@@ -258,6 +264,7 @@ impl World {
         // The Caretaker reads the gauges and acts, then the hour runs.
         let mut events = self.orders.evaluate(&mut self.colony);
         events.extend(self.colony.tick());
+        events.extend(self.load_ore());
         // The crew feel the hour that just ran.
         let colony = &self.colony;
         events.extend(self.crew.step(|bunk| {
@@ -273,6 +280,29 @@ impl World {
             });
         }
         events
+    }
+
+    /// While she is on the pad, every full crate in the stockpile goes aboard,
+    /// as far as her hold has room; the rest waits on the ground.
+    fn load_ore(&mut self) -> Vec<SimEvent> {
+        let Some(ore) = self.colony.ore_def() else {
+            return Vec::new();
+        };
+        if self.ship.location() != &ShipLocation::Pad {
+            return Vec::new();
+        }
+        let loaded = self.ship.load_crates(self.colony.full_crates(), ore);
+        self.colony.pack_crates(loaded);
+        let cargo = self.ship.cargo();
+        let first = cargo.len() - loaded as usize;
+        cargo[first..]
+            .iter()
+            .enumerate()
+            .map(|(k, c)| SimEvent::OreCrateLoaded {
+                id: c.id.clone(),
+                crates: (first + k + 1) as u32,
+            })
+            .collect()
     }
 
     pub fn apply(&mut self, cmd: &Command) -> Result<Vec<SimEvent>, CommandError> {
@@ -756,6 +786,119 @@ mod tests {
             first_break,
             SimEvent::CrewStressChanged { crew, .. } if crew.as_str() == "jonathan"
         ));
+    }
+
+    // --- Ore: a test colony whose smelter makes `kg_per_hour` into 1,000 kg
+    // crates, with the shipped crew in two warm habs and an empty hold.
+
+    fn ore_world(kg_per_hour: u32) -> World {
+        let colony = Colony::from_ron(&format!(
+            r#"(
+                ambient_centi_c: 2000, heat_loss_percent: 100, layout: ["GSHh", "===="],
+                modules: [
+                    (id: "gen", glyph: 'G', output_kw: 20),
+                    (id: "smelter_01", glyph: 'S', draw_kw: 5, machine: Some((
+                        tolerance: (min_centi_c: 0, max_centi_c: 5000), wear_bp_per_hour: 1)),
+                        ore: Some((kg_per_hour: {kg_per_hour}, crate_kg: 1000, cargo: "raw silicon"))),
+                    (id: "hab_01", kind: Hab, glyph: 'H', machine: Some((
+                        tolerance: (min_centi_c: 0, max_centi_c: 5000), wear_bp_per_hour: 1))),
+                    (id: "hab_02", kind: Hab, glyph: 'h', machine: Some((
+                        tolerance: (min_centi_c: 0, max_centi_c: 5000), wear_bp_per_hour: 1))),
+                ],
+            )"#
+        ))
+        .unwrap();
+        let roster = Roster::shipped(&colony).unwrap();
+        let mut world = World::new(colony, roster);
+        world.ship.unload();
+        world
+    }
+
+    fn run_hours(world: &mut World, hours: u64) -> Vec<SimEvent> {
+        (0..hours).flat_map(|_| world.tick()).collect()
+    }
+
+    fn loaded(events: &[SimEvent]) -> Vec<(String, u32)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                SimEvent::OreCrateLoaded { id, crates } => Some((id.clone(), *crates)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_full_crate_of_ore_is_loaded_the_hour_it_is_made() {
+        let mut world = ore_world(250);
+        assert!(loaded(&run_hours(&mut world, 3)).is_empty());
+        assert_eq!((world.colony.ore_kg(), world.ship.cargo().len()), (750, 0));
+        // The fourth hour makes exactly one crate's worth.
+        let events = run_hours(&mut world, 1);
+        assert_eq!(loaded(&events), [("crate_01".to_string(), 1)]);
+        assert_eq!((world.colony.ore_kg(), world.ship.cargo().len()), (0, 1));
+        let c = &world.ship.cargo()[0];
+        assert_eq!(
+            (c.cargo.as_str(), c.mass_kg, c.integrity_pct),
+            ("raw silicon", 1000, 100)
+        );
+        run_hours(&mut world, 5);
+        assert_eq!((world.colony.ore_kg(), world.ship.cargo().len()), (250, 2));
+    }
+
+    #[test]
+    fn the_hold_takes_only_what_it_has_room_for() {
+        // Five crates an hour into a ten-crate hold.
+        let mut world = ore_world(5000);
+        let events = run_hours(&mut world, 3);
+        let ids: Vec<u32> = loaded(&events).iter().map(|(_, n)| *n).collect();
+        assert_eq!(ids, (1..=10).collect::<Vec<_>>());
+        assert_eq!(world.ship.hold_room(), 0);
+        assert_eq!(world.colony.ore_kg(), 5000);
+        // Full: the ore keeps piling up on the ground.
+        assert!(loaded(&run_hours(&mut world, 2)).is_empty());
+        assert_eq!(world.colony.ore_kg(), 15_000);
+        assert_eq!(world.ship.check(), Ok(()));
+    }
+
+    #[test]
+    fn ore_stockpiles_while_she_is_away_and_loads_when_she_is_back() {
+        let mut world = ore_world(500);
+        world
+            .ship
+            .set_location(ShipLocation::Holding(StationId::new("barge_77")));
+        assert!(loaded(&run_hours(&mut world, 10)).is_empty());
+        assert_eq!((world.colony.ore_kg(), world.ship.cargo().len()), (5000, 0));
+        // Milestone 8 flies her home; here she is simply put back on the pad.
+        world.ship.set_location(ShipLocation::Pad);
+        let events = run_hours(&mut world, 1);
+        assert_eq!(loaded(&events).len(), 5);
+        assert_eq!((world.colony.ore_kg(), world.ship.cargo().len()), (500, 5));
+    }
+
+    #[test]
+    fn ore_is_deterministic_and_survives_a_save() {
+        let mut a = ore_world(370);
+        let mut b = ore_world(370);
+        for _ in 0..200 {
+            assert_eq!(a.tick(), b.tick());
+        }
+        assert_eq!(a, b);
+        assert!(a.colony.ore_kg() > 0 && !a.ship.cargo().is_empty());
+        let mut loaded: World = ron::from_str(&ron::to_string(&a).unwrap()).unwrap();
+        assert_eq!(loaded, a);
+        assert_eq!(run_hours(&mut loaded, 50), run_hours(&mut a, 50));
+    }
+
+    #[test]
+    fn on_shipped_content_the_full_hold_leaves_ore_in_the_stockpile() {
+        let mut world = World::landfall();
+        let events = run_hours(&mut world, 26);
+        assert!(loaded(&events).is_empty());
+        assert_eq!(world.ship.cargo().len(), 10);
+        // The smelter runs Nominal all Sol 0 at the shipped rate.
+        let rate = world.colony.ore_def().unwrap().kg_per_hour;
+        assert_eq!(world.colony.ore_kg(), 26 * rate);
     }
 
     #[test]

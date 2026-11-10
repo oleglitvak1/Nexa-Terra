@@ -55,6 +55,9 @@ That trigger is dropped.
   keep pauses short, or the guard needs a keep-warm rule (step 10).
 - The orders screen opens on the postures and loads one (step 4); building and
   deleting cards sit under Advanced.
+- The smelter makes ore into a ground stockpile and loads full crates while
+  *The Mullein* is on the pad (step 5). The shipped hold is already full, so
+  on shipped content the ore only stockpiles until step 10.
 - `Tick::sol()` counts from Sol 0 at landfall, so "full on Sol 45" is tick
   1170 (45 x 26) with one unit per running hour.
 - Flight tests, `gdd_invariants::ready()`, `ship.rs` tests and `nexa-tools
@@ -197,12 +200,14 @@ hands-on session shows what has been built so far.
      survive Sol 10; loading over existing cards asks first and replaces them;
      every shipped card has a plain-words line; the advanced builder still keys
      in a posture by hand.
-5. **Smelter ore** (tests first, on a test colony): production only while
+5. **Smelter ore** *(Done.)* (tests first, on a test colony): production only while
    running and Nominal; the crate boundary; the hold cap (on shipped content the
    hold is already full, so ore only stockpiles until step 10); stockpiling
-   while away; loading resumes back on the pad; determinism.
-   - Screens: the colony status shows `ORE 640/1000 kg  CRATES 10/10`; the
-     launch confirmation shows crates aboard and warns below a full hold.
+   while away; loading resumes back on the pad; determinism; the stockpile
+   stops at the top of `u32`.
+   - Screens: the colony status shows `ORE 640/1000 kg  CRATES 10/10`; `[L]`
+     now opens a launch confirmation that shows crates aboard and warns below a
+     full hold, and `Enter` launches (the script driver presses both).
    - Scripts: `expect ore KG`.
 6. **Battery guard** (tests first): pauses below and resumes above, holds
    between; never overrides a switch-off; `SetGuard` validation; runs before
