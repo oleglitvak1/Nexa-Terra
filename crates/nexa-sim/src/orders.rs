@@ -1,12 +1,14 @@
 //! Standing Orders: rule cards the Caretaker runs every hour while the crew is away.
 //!
 //! Cards are typed data, never strings; [`StandingOrder::render`] gives the
-//! terminal's command syntax. Firing rule (see docs/architecture.md): a card
-//! fires once when all its triggers hold, then stays disarmed until one of its
-//! triggers has moved back past its threshold by the tuning margin.
+//! terminal's command syntax and [`StandingOrder::describe`] the card in plain
+//! words. Firing rule (see docs/architecture.md): a card fires once when all its
+//! triggers hold, then stays disarmed until one of its triggers has moved back
+//! past its threshold by the tuning margin.
 
 use crate::colony::Colony;
 use crate::SimEvent;
+use indexmap::IndexMap;
 use nexa_types::{Command, Guard, ModuleId, CENTI_PER_DEGREE};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -94,6 +96,16 @@ pub struct Preset {
 impl Preset {
     /// Whether every card and guard fits this colony.
     pub fn check(&self, colony: &Colony, tuning: OrderTuning) -> Result<(), PresetError> {
+        self.orders(colony, tuning).map(|_| ())
+    }
+
+    /// The posture's cards, each stored through [`Orders::add`], once its
+    /// guards are checked too.
+    pub(crate) fn orders(
+        &self,
+        colony: &Colony,
+        tuning: OrderTuning,
+    ) -> Result<Orders, PresetError> {
         let mut orders = Orders::new(tuning);
         for card in &self.cards {
             orders
@@ -109,7 +121,7 @@ impl Preset {
                 ));
             }
         }
-        Ok(())
+        Ok(orders)
     }
 }
 
@@ -136,9 +148,9 @@ impl std::error::Error for PresetError {}
 pub struct OrdersDef {
     pub tuning: OrderTuning,
     pub editor: EditorTuning,
-    /// Postures by ID, e.g. `caretaker`.
+    /// Postures by ID, e.g. `caretaker`, in content order.
     #[serde(default)]
-    pub presets: BTreeMap<String, Preset>,
+    pub presets: IndexMap<String, Preset>,
 }
 
 /// Shipped tuning and presets, compiled in so loading needs no file I/O.
@@ -284,6 +296,23 @@ impl Trigger {
             }
         }
     }
+
+    /// Plain words, e.g. `power drops below 25%`.
+    pub fn describe(&self, colony: &Colony) -> String {
+        match self {
+            Trigger::PowerBelowPercent(p) => format!("power drops below {p}%"),
+            Trigger::TempBelow { module, centi_c } => format!(
+                "{} is colder than {} C",
+                name(colony, module),
+                format_degrees(*centi_c)
+            ),
+            Trigger::TempAbove { module, centi_c } => format!(
+                "{} is warmer than {} C",
+                name(colony, module),
+                format_degrees(*centi_c)
+            ),
+        }
+    }
 }
 
 impl Action {
@@ -330,24 +359,40 @@ impl Action {
             Action::ShareHeat { line_of } => format!("share heat ON {line_of}"),
         }
     }
+
+    /// Plain words, e.g. `shut down the smelter`.
+    pub fn describe(&self, colony: &Colony) -> String {
+        match self {
+            Action::Activate(id) => format!("start {}", name(colony, id)),
+            Action::Deactivate(id) => format!("shut down {}", name(colony, id)),
+            Action::DivertHeat { to } => format!("send heat to {}", name(colony, to)),
+            Action::ShareHeat { line_of } => {
+                format!("share heat across {}'s line", name(colony, line_of))
+            }
+        }
+    }
 }
 
 impl StandingOrder {
     /// The card in the terminal's command syntax. A side with nothing on it yet (a
     /// draft in the editor) shows as `...`; a stored card always has both.
     pub fn render(&self) -> String {
-        let join = |parts: Vec<String>| {
-            if parts.is_empty() {
-                "...".to_string()
-            } else {
-                parts.join(" AND ")
-            }
-        };
         format!(
             "IF {} THEN {}",
-            join(self.triggers.iter().map(Trigger::render).collect()),
-            join(self.actions.iter().map(Action::render).collect())
+            join_or_dots(self.triggers.iter().map(Trigger::render), " AND "),
+            join_or_dots(self.actions.iter().map(Action::render), " AND ")
         )
+    }
+
+    /// The card in plain words, naming modules as the colony content does: e.g.
+    /// "When power drops below 25%: shut down the smelter, start heater 2, send
+    /// heat to hab 1." An empty side shows as `...`, as in [`Self::render`].
+    pub fn describe(&self, colony: &Colony) -> String {
+        let when = join_or_dots(self.triggers.iter().map(|t| t.describe(colony)), " and ");
+        let then = join_or_dots(self.actions.iter().map(|a| a.describe(colony)), ", ");
+        // "..." already ends the sentence.
+        let stop = if self.actions.is_empty() { "" } else { "." };
+        format!("When {when}: {then}{stop}")
     }
 
     /// Every module the card names must exist; heat actions need a heat line.
@@ -537,18 +582,41 @@ impl Orders {
     }
 }
 
+/// A draft card's empty side shows as `...`.
+fn join_or_dots(parts: impl Iterator<Item = String>, sep: &str) -> String {
+    let parts: Vec<String> = parts.collect();
+    if parts.is_empty() {
+        "...".to_string()
+    } else {
+        parts.join(sep)
+    }
+}
+
+/// A module's name for plain words, verbatim from content ("the smelter",
+/// "heater 2"). A module the colony lacks goes by its ID.
+fn name<'a>(colony: &'a Colony, id: &'a ModuleId) -> &'a str {
+    colony
+        .module(id)
+        .map_or(id.as_str(), |m| m.def().display_name())
+}
+
 fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
     colony.module(id).map(|m| m.temp_centi_c())
 }
 
 /// Centi-degrees as degrees C with one decimal place, rounding half away from zero.
 pub fn format_centi_c(centi_c: i32) -> String {
+    format!("{}C", format_degrees(centi_c))
+}
+
+/// [`format_centi_c`] without the unit.
+fn format_degrees(centi_c: i32) -> String {
     const TENTHS_PER_DEGREE: i64 = 10;
     let centi_per_tenth = i64::from(CENTI_PER_DEGREE) / TENTHS_PER_DEGREE;
     let tenths = (i64::from(centi_c).abs() + centi_per_tenth / 2) / centi_per_tenth;
     let sign = if centi_c < 0 && tenths != 0 { "-" } else { "" };
     format!(
-        "{sign}{}.{}C",
+        "{sign}{}.{}",
         tenths / TENTHS_PER_DEGREE,
         tenths % TENTHS_PER_DEGREE
     )
@@ -646,6 +714,84 @@ mod tests {
             card(1, vec![], vec![Action::Activate(id("heater_02"))]).render(),
             "IF ... THEN activate heater_02"
         );
+    }
+
+    #[test]
+    fn describes_the_first_protect_habs_card_in_plain_words() {
+        let card = &OrdersDef::shipped().presets["protect-habs"].cards[0];
+        assert_eq!(
+            card.describe(&ash_plain()),
+            "When power drops below 25%: shut down the smelter, start heater 2, send heat to hab 1."
+        );
+    }
+
+    #[test]
+    fn describes_every_trigger_and_action() {
+        let order = card(
+            1,
+            vec![
+                Trigger::TempBelow {
+                    module: id("hab_01"),
+                    centi_c: -500,
+                },
+                Trigger::TempAbove {
+                    module: id("hab_02"),
+                    centi_c: 1450,
+                },
+            ],
+            vec![
+                Action::Activate(id("heater_02")),
+                Action::ShareHeat {
+                    line_of: id("hab_01"),
+                },
+            ],
+        );
+        assert_eq!(
+            order.describe(&ash_plain()),
+            "When hab 1 is colder than -5.0 C and hab 2 is warmer than 14.5 C: \
+             start heater 2, share heat across hab 1's line."
+        );
+        assert_eq!(
+            card(1, vec![], vec![]).describe(&ash_plain()),
+            "When ...: ..."
+        );
+    }
+
+    #[test]
+    fn every_shipped_card_reads_in_plain_words() {
+        let protect = [
+            "When power drops below 25%: shut down the smelter, start heater 2, send heat to hab 1.",
+            "When hab 1 is warmer than 16.0 C: send heat to hab 2.",
+            "When hab 2 is warmer than 16.0 C: send heat to hab 1.",
+        ];
+        let colony = ash_plain();
+        let lines = |id: &str| -> Vec<String> {
+            OrdersDef::shipped().presets[id]
+                .cards
+                .iter()
+                .map(|c| c.describe(&colony))
+                .collect()
+        };
+        assert_eq!(lines("protect-habs"), protect);
+        assert_eq!(lines("caretaker"), protect);
+        assert_eq!(
+            lines("doc-example"),
+            ["When power drops below 25%: shut down the smelter, send heat to hab 1."]
+        );
+        assert_eq!(OrdersDef::shipped().presets.keys().count(), 3);
+        // Every module is named in words, not by its ID.
+        for card in OrdersDef::shipped().presets.values().flat_map(|p| &p.cards) {
+            let line = card.describe(&colony);
+            for m in colony.modules() {
+                assert!(!line.contains(m.id().as_str()), "{line} names {}", m.id());
+            }
+        }
+    }
+
+    #[test]
+    fn postures_keep_their_content_order() {
+        let ids: Vec<&String> = OrdersDef::shipped().presets.keys().collect();
+        assert_eq!(ids, ["protect-habs", "caretaker", "doc-example"]);
     }
 
     #[test]

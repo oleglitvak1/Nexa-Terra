@@ -107,14 +107,15 @@ impl Colony {
         }
     }
 
-    /// Pre-milestone-6 saves kept module defs with no ore, scrubber or guard
-    /// blocks; give modules the shipped landing site's blocks by ID.
+    /// Pre-milestone-6 saves kept module defs with no name, ore, scrubber or
+    /// guard block; give modules the shipped landing site's by ID.
     pub(crate) fn add_legacy_blocks(&mut self) {
         let shipped = ColonyDef::shipped();
         for m in &mut self.modules {
             let Some(s) = shipped.modules.iter().find(|s| s.id == m.def.id) else {
                 continue;
             };
+            m.def.name = m.def.name.take().or_else(|| s.name.clone());
             m.def.ore = m.def.ore.take().or_else(|| s.ore.clone());
             m.def.scrubber = m.def.scrubber.or(s.scrubber);
             m.def.guard = m.def.guard.or(s.guard);
@@ -692,6 +693,10 @@ mod tests {
                 Box::new(move |d| d.modules[0].guard = guard(25)),
                 ContentError::BadGuard(id("gen")),
             ),
+            (
+                Box::new(|d| d.modules[1].name = Some(" ".into())),
+                ContentError::BlankName(id("hab")),
+            ),
         ];
         for (bend, err) in cases {
             let mut def = valid();
@@ -726,10 +731,14 @@ mod tests {
         );
     }
 
-    /// A save written before milestone 6: no ore stockpile, no ore or scrubber blocks.
+    /// A save written before milestone 6: no ore stockpile, no names, no ore or scrubber blocks.
     fn pre_m6_save(c: &Colony) -> String {
         let saved = ron::to_string(c).unwrap();
-        let old = saved
+        let mut old = saved.clone();
+        for name in c.modules().iter().filter_map(|m| m.def().name.as_ref()) {
+            old = old.replacen(&format!(",name:{name:?}"), "", 1);
+        }
+        let old = old
             .replacen(
                 ",ore:Some((kg_per_hour:50,crate_kg:1000,cargo:\"raw silicon\"))",
                 "",
@@ -741,7 +750,7 @@ mod tests {
                 1,
             )
             .replacen(",ore_kg:0", "", 1);
-        for gone in ["ore:", "scrubber:", "ore_kg:"] {
+        for gone in ["name:", "ore:", "scrubber:", "ore_kg:"] {
             assert!(!old.contains(gone), "{gone} format changed: {saved}");
         }
         old
@@ -752,6 +761,14 @@ mod tests {
         let c = ash_plain();
         let loaded: Colony = ron::from_str(&pre_m6_save(&c)).unwrap();
         assert_eq!(loaded, c);
+        let smelter = loaded.module(&id("smelter_01")).unwrap();
+        assert_eq!(smelter.def().display_name(), "the smelter");
+    }
+
+    #[test]
+    fn a_module_without_a_name_goes_by_its_id() {
+        let c = Colony::from_def(tiny()).unwrap();
+        assert_eq!(c.module(&id("hab")).unwrap().def().display_name(), "hab");
     }
 
     #[test]

@@ -35,6 +35,9 @@ That trigger is dropped.
 | Base log | Readable at a glance (seen in the step-2 playthrough: from Sol 8 the `caretaker` run is almost all `ORDER 2 FIRED` / `ORDER 3 FIRED`, every two hours). A fired card says what it did in plain words, routine repeats fold into one counted line, and anything that changes the colony's state always gets its own line. Presentation only; the sim's events don't change. |
 | Plain-language failure causes | What a card did is in plain words from M6 (base log). Chains of cause are deferred to milestone 8's Black Box ("smelter froze on Sol 5: card 1 shut it off at 25% power and nothing restarted it"). M6 keeps the events the Black Box will need. |
 | Playtest early | Show the orders screen (postures, guard, forecast) to one or two non-programmers at the end of M6, not only at the M8 playtest. |
+| Module names (step 4) | From content: an optional `name` on `ModuleDef`, used verbatim, with the article written in where one belongs (`name: "the smelter"`, `name: "heater 2"`), written bare, with a serde default. A module without one goes by its ID. Saves from before it get the shipped names by module ID, as `Colony::add_legacy_blocks` gives the other blocks. The step-11 base log reuses them. |
+| Card wording (step 4) | "When <triggers>: <action>, <action>, <action>." Triggers join with "and": "power drops below 25%", "hab 1 is warmer than 16.0 C" / "colder than". Actions: "start", "shut down", "send heat to", "share heat across hab 1's line". Module names appear as content writes them ("the smelter", "heater 2"); the code adds no article. |
+| Advanced key (step 4) | `A` on the posture picker, shown in its help line. Behind it, the card list and builder work as before (N new, D delete). The picker lists every shipped posture in content order. |
 
 ## What the code shows today
 
@@ -50,8 +53,8 @@ That trigger is dropped.
 - A switched-off smelter freezes (its band starts at -5.0 C against -40.0 C
   outside), so a guard that pauses it for long goes Offline. The tuning has to
   keep pauses short, or the guard needs a keep-warm rule (step 10).
-- The orders screen can build and delete cards but can't load a preset; only
-  scripts and `nexa-tools` can.
+- The orders screen opens on the postures and loads one (step 4); building and
+  deleting cards sit under Advanced.
 - `Tick::sol()` counts from Sol 0 at landfall, so "full on Sol 45" is tick
   1170 (45 x 26) with one unit per running hour.
 - Flight tests, `gdd_invariants::ready()`, `ship.rs` tests and `nexa-tools
@@ -176,8 +179,10 @@ hands-on session shows what has been built so far.
    `caretaker`. Test that dumping is unavailable with fewer than 3 crates.
    Behaviour is unchanged: the fixtures load the same 10 crates the shipped
    manifest still holds.
-4. **Postures in the game.** Moved up from the screens step after the first
-   hands-on session: the orders screen was still the IF/THEN builder.
+4. **Postures in the game.** *(Done.)* Moved up from the screens step after the first
+   hands-on session: the orders screen was still the IF/THEN builder. Names
+   and wording as in the Decisions table. Guards are checked, not applied,
+   until step 6.
    - `StandingOrder::describe()` next to `render()`: a card in plain words,
      e.g. *"When power drops below 25%: shut down the smelter, start heater 2,
      send heat to hab 1."* The base log reuses it in step 11.

@@ -11,7 +11,7 @@ use crew::{Assignment, Crew, CrewError, Roster, SplitError, StressLevel};
 use flight::{Resolution, Voyage};
 use machines::MachineState;
 use nexa_types::{Command, CrewId, HazardId, ModuleId, StationId, Tick, TICKS_PER_SOL};
-use orders::{Action, OrderError, Orders, SkipReason, StandingOrder};
+use orders::{Action, OrderError, Orders, Preset, PresetError, SkipReason, StandingOrder};
 use rng::SimRng;
 use serde::{Deserialize, Serialize};
 use ship::{Ship, ShipDef, ShipError, ShipLocation};
@@ -76,6 +76,19 @@ struct RawWorld {
     /// Saves from before The Slip have no voyage.
     #[serde(default)]
     voyage: Option<Voyage>,
+}
+
+/// Writes a present optional field bare, for [`present`] to read back. Pair it
+/// with `skip_serializing_if = "Option::is_none"`.
+pub(crate) fn bare<S, T>(value: &Option<T>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    T: Serialize,
+{
+    match value {
+        Some(v) => v.serialize(s),
+        None => s.serialize_none(),
+    }
 }
 
 /// Reads a field a save writes bare, not as an RON `Some(..)`.
@@ -271,6 +284,14 @@ impl World {
         self.orders.add(order, &self.colony)
     }
 
+    /// Load a posture: its cards replace the current ones, each checked as
+    /// [`Self::add_order`] checks it, and its guards are checked against the
+    /// colony (they are not applied yet). A refused posture changes nothing.
+    pub fn load_posture(&mut self, posture: &Preset) -> Result<(), PresetError> {
+        self.orders = posture.orders(&self.colony, self.orders.tuning())?;
+        Ok(())
+    }
+
     /// Take a Standing Order out of its slot; later cards move up.
     pub fn remove_order(&mut self, slot: usize) -> Result<StandingOrder, OrderError> {
         self.orders.remove(slot)
@@ -336,10 +357,65 @@ mod tests {
 
     fn with_preset(name: &str) -> World {
         let mut world = World::landfall();
-        for order in &OrdersDef::shipped().presets[name].cards {
-            world.add_order(order.clone()).unwrap();
-        }
+        world.load_posture(posture(name)).unwrap();
         world
+    }
+
+    fn posture(name: &str) -> &'static Preset {
+        &OrdersDef::shipped().presets[name]
+    }
+
+    fn cards(world: &World) -> Vec<StandingOrder> {
+        world.orders.iter().cloned().collect()
+    }
+
+    #[test]
+    fn loading_a_posture_replaces_the_cards() {
+        let mut world = with_preset("doc-example");
+        world.load_posture(posture("protect-habs")).unwrap();
+        assert_eq!(cards(&world), posture("protect-habs").cards);
+    }
+
+    #[test]
+    fn a_refused_posture_changes_nothing() {
+        let mut world = with_preset("doc-example");
+        run_sols(&mut world, 3);
+        let before = world.clone();
+        let mut ghost = posture("protect-habs").clone();
+        ghost.cards[2].actions = vec![Action::DivertHeat {
+            to: ModuleId::new("ghost"),
+        }];
+        assert_eq!(
+            world.load_posture(&ghost),
+            Err(PresetError::Card(OrderError::UnknownModule(ModuleId::new(
+                "ghost"
+            ))))
+        );
+        let mut too_many = posture("protect-habs").clone();
+        let memory = usize::from(world.orders.tuning().memory);
+        too_many.cards = vec![too_many.cards[0].clone(); memory + 1];
+        assert!(matches!(
+            world.load_posture(&too_many),
+            Err(PresetError::Card(OrderError::MemoryFull { .. }))
+        ));
+        let mut bad_guard = posture("protect-habs").clone();
+        bad_guard.guards.insert(ModuleId::new("ghost"), None);
+        assert!(matches!(
+            world.load_posture(&bad_guard),
+            Err(PresetError::Guard(CommandError::UnknownModule(_)))
+        ));
+        assert_eq!(world, before);
+    }
+
+    #[test]
+    fn protect_habs_keeps_both_habs_nominal_to_sol_10() {
+        let mut world = with_preset("doc-example");
+        world.load_posture(posture("protect-habs")).unwrap();
+        run_sols(&mut world, 10);
+        for hab in ["hab_01", "hab_02"] {
+            let m = world.colony.module(&ModuleId::new(hab)).unwrap();
+            assert_eq!(m.machine().unwrap().state(), MachineState::Nominal, "{hab}");
+        }
     }
 
     fn run_sols(world: &mut World, sols: u64) -> Vec<SimEvent> {

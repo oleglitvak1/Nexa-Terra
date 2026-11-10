@@ -6,6 +6,14 @@ fn id(s: &str) -> ModuleId {
     ModuleId::new(s)
 }
 
+/// The terminal opened, then [A] for the advanced card list.
+fn advanced(world: &mut World) -> OrdersEditor {
+    let mut editor = OrdersEditor::new();
+    editor.handle(KeyCode::A, world);
+    assert_eq!(editor.mode, Mode::List);
+    editor
+}
+
 fn press(editor: &mut OrdersEditor, world: &mut World, keys: &[KeyCode]) -> Outcome {
     keys.iter()
         .fold(Outcome::Stay, |_, &k| editor.handle(k, world))
@@ -42,7 +50,7 @@ fn screen_text(editor: &OrdersEditor, world: &World) -> String {
 #[test]
 fn builds_the_design_doc_card_from_lists() {
     let mut world = World::landfall();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     // IF grid.power < 25%
     press(
         &mut editor,
@@ -73,7 +81,7 @@ fn builds_the_design_doc_card_from_lists() {
 #[test]
 fn a_temperature_trigger_starts_at_the_reading_and_adjusts() {
     let mut world = World::landfall();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     // MODULE.temp < N, on hab_01 (14.0C at landfall).
     press(&mut editor, &mut world, &[KeyCode::N, KeyCode::T]);
     choose(&mut editor, &mut world, 1);
@@ -129,7 +137,7 @@ fn heat_actions_only_offer_modules_on_a_heat_line() {
 #[test]
 fn a_refused_card_stays_open_with_the_reason() {
     let mut world = World::landfall();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     press(&mut editor, &mut world, &[KeyCode::N, KeyCode::Enter]);
     assert!(world.orders.is_empty());
     assert!(matches!(editor.mode, Mode::Draft { .. }));
@@ -142,7 +150,7 @@ fn a_refused_card_stays_open_with_the_reason() {
 #[test]
 fn backspace_undoes_the_last_part_and_priority_stays_in_range() {
     let mut world = World::landfall();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     press(
         &mut editor,
         &mut world,
@@ -172,16 +180,16 @@ fn backspace_undoes_the_last_part_and_priority_stays_in_range() {
 
 fn with_protect_habs() -> World {
     let mut world = World::landfall();
-    for order in &OrdersDef::shipped().presets["protect-habs"].cards {
-        world.add_order(order.clone()).unwrap();
-    }
+    world
+        .load_posture(&OrdersDef::shipped().presets["protect-habs"])
+        .unwrap();
     world
 }
 
 #[test]
 fn delete_removes_the_selected_card() {
     let mut world = with_protect_habs();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     let last = world.orders.get(2).unwrap().clone();
     press(
         &mut editor,
@@ -196,14 +204,16 @@ fn delete_removes_the_selected_card() {
 }
 
 #[test]
-fn escape_discards_a_draft_then_closes_the_terminal() {
+fn escape_discards_a_draft_then_backs_out_to_the_postures_then_closes() {
     let mut world = World::landfall();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     assert_eq!(
         press(&mut editor, &mut world, &[KeyCode::N, KeyCode::Escape]),
         Outcome::Stay
     );
     assert_eq!(editor.mode, Mode::List);
+    assert_eq!(editor.handle(KeyCode::Escape, &mut world), Outcome::Stay);
+    assert_eq!(editor.mode, Mode::Postures);
     assert_eq!(editor.handle(KeyCode::Escape, &mut world), Outcome::Close);
 }
 
@@ -212,7 +222,7 @@ fn a_full_terminal_refuses_a_new_card() {
     let mut world = with_protect_habs();
     let card = world.orders.get(0).unwrap().clone();
     while world.add_order(card.clone()).is_ok() {}
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     editor.handle(KeyCode::N, &mut world);
     assert_eq!(editor.mode, Mode::List);
     assert_eq!(
@@ -222,25 +232,63 @@ fn a_full_terminal_refuses_a_new_card() {
 }
 
 #[test]
-fn the_list_shows_every_card_with_its_slot_and_priority() {
-    let world = with_protect_habs();
-    let screen = screen_text(&OrdersEditor::new(), &world);
-    assert!(screen.contains("MEMORY 3/8"));
-    assert!(screen.contains("> 1 P1 IF grid.power < 25% THEN shutdown smelter_01"));
-    assert!(screen.contains("  3 P2 IF hab_02.temp > 16.0C THEN divert heat TO hab_01"));
+fn the_list_shows_every_card_in_plain_words_then_its_command_line_dimmer() {
+    let mut world = with_protect_habs();
+    let editor = advanced(&mut world);
+    let mut t = Terminal::new(80, 36);
+    editor.draw(&mut t, &world, 34);
+    let rows: Vec<String> = (0..t.rows()).map(|r| row_text(&t, r)).collect();
+    let find = |text: &str| {
+        rows.iter()
+            .position(|r| r.contains(text))
+            .unwrap_or_else(|| panic!("{text:?} not on screen:\n{}", rows.join("\n")))
+    };
+    assert!(rows.iter().any(|r| r.contains("MEMORY 3/8")));
+    let first = find("> 1 P1 When power drops below 25%: shut down the smelter, start");
+    let command = find("IF grid.power < 25% THEN shutdown smelter_01");
+    assert!(first < command, "plain words come first");
+    let third = find("  3 P2 When hab 2 is warmer than 16.0 C: send heat to hab 1.");
+    assert_eq!(
+        rows[third + 1].trim(),
+        "IF hab_02.temp > 16.0C THEN divert heat TO hab_01"
+    );
+    assert_eq!(t.get(LEFT + CARD_INDENT, command).unwrap().ink, Ink::Dim);
+    assert_eq!(t.get(LEFT + CARD_INDENT, first).unwrap().ink, Ink::Bright);
+    assert_eq!(t.get(LEFT + CARD_INDENT, third).unwrap().ink, Ink::Amber);
 }
 
 #[test]
 fn an_empty_terminal_says_the_caretaker_will_do_nothing() {
-    let screen = screen_text(&OrdersEditor::new(), &World::landfall());
-    assert!(screen.contains("MEMORY 0/8"));
-    assert!(screen.contains("THE CARETAKER WILL DO NOTHING"));
+    let mut world = World::landfall();
+    for editor in [OrdersEditor::new(), advanced(&mut world)] {
+        let screen = screen_text(&editor, &world);
+        assert!(screen.contains("MEMORY 0/8"));
+        assert!(screen.contains("THE CARETAKER WILL DO NOTHING"));
+    }
+}
+
+#[test]
+fn the_terminal_opens_on_the_postures_with_their_names_and_summaries() {
+    let world = World::landfall();
+    let editor = OrdersEditor::new();
+    assert_eq!(editor.mode, Mode::Postures);
+    let screen = screen_text(&editor, &world);
+    for posture in OrdersDef::shipped().presets.values() {
+        assert!(screen.contains(&posture.name), "{}", posture.name);
+        let start = wrap(&posture.summary, WIDTH - POSTURE_INDENT).remove(0);
+        assert!(screen.contains(&start), "{start}");
+    }
+    assert!(screen.contains("[A] ADVANCED"));
+    // In content order: the safe posture first.
+    let at = |name: &str| screen.find(name).unwrap();
+    assert!(at("Protect the habs") < at("Balanced"));
+    assert!(at("Balanced") < at("Design doc example"));
 }
 
 #[test]
 fn the_draft_shows_empty_slots() {
     let mut world = World::landfall();
-    let mut editor = OrdersEditor::new();
+    let mut editor = advanced(&mut world);
     editor.handle(KeyCode::N, &mut world);
     let screen = screen_text(&editor, &world);
     assert!(screen.contains("NEW CARD"));
