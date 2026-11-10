@@ -15,11 +15,36 @@ struct Session {
 }
 
 impl Session {
+    /// The terminal as `O` opens it, on the postures.
     fn new(world: World) -> Self {
-        Self {
+        let s = Self {
             editor: OrdersEditor::new(),
             world,
+        };
+        s.check_screen(KeyCode::O);
+        s
+    }
+
+    /// Opened, then [A] for the card list and builder.
+    fn advanced(world: World) -> Self {
+        let mut s = Self::new(world);
+        s.press(&[KeyCode::A]);
+        assert_eq!(s.editor.mode, Mode::List);
+        s
+    }
+
+    /// Move the posture picker onto `id` and press Enter.
+    fn pick_posture(&mut self, id: &str) {
+        let i = OrdersDef::shipped()
+            .presets
+            .keys()
+            .position(|k| k == id)
+            .unwrap();
+        let steps = (i + postures().len() - self.editor.postures.cursor()) % postures().len();
+        for _ in 0..steps {
+            self.press(&[KeyCode::Down]);
         }
+        self.press(&[KeyCode::Enter]);
     }
 
     fn press(&mut self, keys: &[KeyCode]) -> Outcome {
@@ -92,7 +117,7 @@ impl Session {
     fn draft(&self) -> &StandingOrder {
         match &self.editor.mode {
             Mode::Draft { order, .. } => order,
-            Mode::List => panic!("no draft open"),
+            Mode::Postures | Mode::List => panic!("no draft open"),
         }
     }
 
@@ -142,8 +167,13 @@ impl Session {
             "help covered after {after:?}"
         );
 
-        // The selected card is always on screen.
-        if self.editor.mode == Mode::List && !self.world.orders.is_empty() {
+        // The selected card or posture is always on screen.
+        let something_selected = match self.editor.mode {
+            Mode::Postures => true,
+            Mode::List => !self.world.orders.is_empty(),
+            Mode::Draft { .. } => false,
+        };
+        if something_selected {
             assert!(
                 (TOP..message_row).any(|r| t.get(LEFT, r).unwrap().ch == '>'),
                 "selected card scrolled off after {after:?}:\n{}",
@@ -189,7 +219,7 @@ fn key_in_protect_habs(s: &mut Session) {
 
 #[test]
 fn keying_in_the_protect_habs_preset_saves_both_habs() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     key_in_protect_habs(&mut s);
     assert_eq!(
         s.world.orders.iter().cloned().collect::<Vec<_>>(),
@@ -209,7 +239,7 @@ fn keying_in_the_protect_habs_preset_saves_both_habs() {
 
 #[test]
 fn a_keyed_in_card_fires_in_the_sim() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N]);
     s.power_trigger(50);
     s.action(ActionKind::Shutdown, "smelter_01");
@@ -249,7 +279,7 @@ fn a_card_built_mid_run_starts_from_the_live_reading() {
         .module(&ModuleId::new("hab_02"))
         .unwrap()
         .temp_centi_c();
-    let mut s = Session::new(world);
+    let mut s = Session::advanced(world);
     s.press(&[KeyCode::N, KeyCode::T]);
     s.down_and_enter(1);
     let i = watched(&s.world.colony)
@@ -269,7 +299,7 @@ fn a_card_built_mid_run_starts_from_the_live_reading() {
 
 #[test]
 fn escape_backs_out_one_step_at_a_time_and_keeps_the_draft() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N]);
     s.power_trigger(25);
     // Into the action module list, then back out level by level.
@@ -314,10 +344,12 @@ fn escape_backs_out_one_step_at_a_time_and_keeps_the_draft() {
         1,
         "a cancelled threshold adds nothing"
     );
-    // Then the draft, then the terminal.
+    // Then the draft, then the card list, then the terminal.
     assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Stay);
     assert_eq!(s.editor.mode, Mode::List);
     assert!(s.world.orders.is_empty());
+    assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Stay);
+    assert_eq!(s.editor.mode, Mode::Postures);
     assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Close);
 }
 
@@ -341,6 +373,8 @@ fn unbound_keys_change_nothing_at_any_step() {
         assert_eq!(s.world.orders, orders);
     };
     check(&mut s);
+    s.press(&[KeyCode::A]);
+    check(&mut s);
     s.press(&[KeyCode::N]);
     check(&mut s);
     s.press(&[KeyCode::T]);
@@ -357,7 +391,7 @@ fn unbound_keys_change_nothing_at_any_step() {
 
 #[test]
 fn deleting_every_card_then_one_more() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     key_in_protect_habs(&mut s);
     // The cursor sits on the card just stored.
     assert_eq!(s.editor.list.cursor(), 2);
@@ -374,7 +408,7 @@ fn deleting_every_card_then_one_more() {
 
 #[test]
 fn memory_fills_from_the_editor_and_frees_on_delete() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     let memory = s.world.orders.tuning().memory;
     for slot in 0..memory {
         s.press(&[KeyCode::N]);
@@ -395,7 +429,7 @@ fn memory_fills_from_the_editor_and_frees_on_delete() {
 
 #[test]
 fn refused_cards_explain_themselves_and_can_be_fixed() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N, KeyCode::Enter]);
     assert_eq!(
         s.editor.message.as_deref(),
@@ -417,7 +451,7 @@ fn refused_cards_explain_themselves_and_can_be_fixed() {
 
 #[test]
 fn power_thresholds_clamp_at_both_ends_from_the_keyboard() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N, KeyCode::T, KeyCode::Enter]);
     s.nudge(-30);
     s.press(&[KeyCode::Enter, KeyCode::T, KeyCode::Enter]);
@@ -436,7 +470,7 @@ fn power_thresholds_clamp_at_both_ends_from_the_keyboard() {
 /// message and the key help on screen.
 #[test]
 fn a_full_terminal_of_long_cards_fits_the_screen() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     let memory = s.world.orders.tuning().memory;
     for _ in 0..memory {
         s.press(&[KeyCode::N]);
@@ -462,11 +496,15 @@ fn a_full_terminal_of_long_cards_fits_the_screen() {
         text.contains("> 8 P9"),
         "selected card scrolled off:\n{text}"
     );
+    // Under the postures the list doesn't scroll: it ends in "..." above the message.
+    s.press(&[KeyCode::Escape]);
+    let text = s.text();
+    assert!(text.contains("\n|        ..."), "no cut marker:\n{text}");
 }
 
 #[test]
 fn backspace_undoes_the_latest_part_whichever_kind_it_was() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N]);
     s.action(ActionKind::Shutdown, "smelter_01");
     s.power_trigger(25);
@@ -479,7 +517,7 @@ fn backspace_undoes_the_latest_part_whichever_kind_it_was() {
 
 #[test]
 fn power_steps_by_one_below_the_first_step() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N]);
     s.power_trigger(5);
     s.press(&[KeyCode::T, KeyCode::Enter]);
@@ -494,7 +532,7 @@ fn power_steps_by_one_below_the_first_step() {
 
 #[test]
 fn delete_asks_first_and_any_other_key_cancels() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     key_in_protect_habs(&mut s);
     s.press(&[KeyCode::D]);
     assert_eq!(s.world.orders.len(), 3);
@@ -517,19 +555,24 @@ fn delete_asks_first_and_any_other_key_cancels() {
 
 #[test]
 fn backspace_on_the_list_stays_in_the_terminal() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N]);
     s.power_trigger(25);
     s.press(&[KeyCode::Backspace, KeyCode::Backspace, KeyCode::Escape]);
     assert_eq!(s.editor.mode, Mode::List);
     assert_eq!(s.press(&[KeyCode::Backspace]), Outcome::Stay);
+    assert_eq!(
+        s.press(&[KeyCode::Escape, KeyCode::Backspace]),
+        Outcome::Stay
+    );
+    assert_eq!(s.editor.mode, Mode::Postures);
     assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Close);
 }
 
 /// The sim puts no limit on parts per card, so the screen has to cope.
 #[test]
 fn an_endless_draft_keeps_the_message_and_help_on_screen() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     s.press(&[KeyCode::N]);
     for i in 0..20 {
         s.temp_trigger(i % 2 == 0, "hab_01", 1000 + 50 * i);
@@ -544,7 +587,7 @@ fn an_endless_draft_keeps_the_message_and_help_on_screen() {
 
 #[test]
 fn the_list_scrolls_to_the_selected_card() {
-    let mut s = Session::new(World::landfall());
+    let mut s = Session::advanced(World::landfall());
     let memory = s.world.orders.tuning().memory;
     for _ in 0..memory {
         s.press(&[KeyCode::N]);
@@ -565,4 +608,83 @@ fn the_list_scrolls_to_the_selected_card() {
     assert!(text.contains("> 1 P1"), "wrapped back to the top:\n{text}");
     s.press(&[KeyCode::Up]);
     assert!(s.text().contains("> 8 P1"));
+}
+
+fn habs_nominal_after_10_sols(mut world: World) {
+    for _ in 0..10 * TICKS_PER_SOL {
+        world.tick();
+    }
+    for hab in ["hab_01", "hab_02"] {
+        let m = world.colony.module(&ModuleId::new(hab)).unwrap();
+        assert_eq!(m.machine().unwrap().state(), MachineState::Nominal, "{hab}");
+    }
+}
+
+#[test]
+fn picking_protect_the_habs_loads_its_three_cards_and_the_habs_survive_sol_10() {
+    let mut s = Session::new(World::landfall());
+    s.pick_posture("protect-habs");
+    assert_eq!(
+        s.world.orders.iter().cloned().collect::<Vec<_>>(),
+        protect_habs()
+    );
+    assert_eq!(
+        s.editor.message.as_deref(),
+        Some("PROTECT THE HABS LOADED: 3 CARDS")
+    );
+    let text = s.text();
+    assert!(text.contains("send heat to hab 1."), "{text}");
+    habs_nominal_after_10_sols(s.world);
+}
+
+#[test]
+fn loading_over_cards_asks_first_then_replaces_them() {
+    let mut world = World::landfall();
+    world
+        .load_posture(&OrdersDef::shipped().presets["doc-example"])
+        .unwrap();
+    let doc_example = world.orders.clone();
+    let mut s = Session::new(world);
+    s.pick_posture("protect-habs");
+    assert_eq!(
+        s.world.orders, doc_example,
+        "nothing changes on the first Enter"
+    );
+    assert_eq!(
+        s.editor.message.as_deref(),
+        Some("REPLACE 1 CARD WITH PROTECT THE HABS? [ENTER] AGAIN TO CONFIRM")
+    );
+    // Moving away cancels, so the next Enter only asks again, about the new pick.
+    s.press(&[KeyCode::Up, KeyCode::Enter]);
+    assert_eq!(s.world.orders, doc_example);
+    // Esc cancels the question without leaving the terminal.
+    assert_eq!(s.press(&[KeyCode::Escape]), Outcome::Stay);
+    assert_eq!(s.editor.message, None);
+    s.press(&[KeyCode::Down, KeyCode::Enter]);
+    assert_eq!(s.world.orders, doc_example);
+    s.press(&[KeyCode::Enter]);
+    assert_eq!(
+        s.world.orders.iter().cloned().collect::<Vec<_>>(),
+        protect_habs(),
+        "the old card is gone, not kept alongside"
+    );
+}
+
+#[test]
+fn a_posture_loaded_after_hand_built_cards_replaces_them() {
+    let mut s = Session::advanced(World::landfall());
+    s.press(&[KeyCode::N]);
+    s.power_trigger(50);
+    s.action(ActionKind::Shutdown, "heater_01");
+    s.press(&[KeyCode::Enter, KeyCode::Escape]);
+    assert_eq!(s.editor.mode, Mode::Postures);
+    s.pick_posture("protect-habs");
+    s.press(&[KeyCode::Enter]);
+    assert_eq!(
+        s.world.orders.iter().cloned().collect::<Vec<_>>(),
+        protect_habs()
+    );
+    // The card list shows the loaded posture's cards.
+    s.press(&[KeyCode::A]);
+    assert!(s.text().contains("> 1 P1 When power drops below 25%"));
 }

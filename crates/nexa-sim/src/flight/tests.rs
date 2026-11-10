@@ -637,9 +637,9 @@ fn arrival_runs_the_colony_through_every_sol_flown() {
 #[test]
 fn standing_orders_run_while_the_ship_is_away() {
     let mut world = crewed(2);
-    for order in &crate::orders::OrdersDef::shipped().presets["protect-habs"].cards {
-        world.add_order(order.clone()).unwrap();
-    }
+    world
+        .load_posture(&crate::orders::OrdersDef::shipped().presets["protect-habs"])
+        .unwrap();
     world.launch(&mut OfflineUniverse::default()).unwrap();
     let (voyage_events, colony) = fly_apart(&mut world, "dump");
     assert!(colony

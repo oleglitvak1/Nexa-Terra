@@ -50,8 +50,8 @@ That trigger is dropped.
 - A switched-off smelter freezes (its band starts at -5.0 C against -40.0 C
   outside), so a guard that pauses it for long goes Offline. The tuning has to
   keep pauses short, or the guard needs a keep-warm rule (step 10).
-- The orders screen can build and delete cards but can't load a preset; only
-  scripts and `nexa-tools` can.
+- The orders screen opens on the postures and loads one (step 4); building and
+  deleting cards sit under Advanced.
 - `Tick::sol()` counts from Sol 0 at landfall, so "full on Sol 45" is tick
   1170 (45 x 26) with one unit per running hour.
 - Flight tests, `gdd_invariants::ready()`, `ship.rs` tests and `nexa-tools
@@ -176,8 +176,11 @@ hands-on session shows what has been built so far.
    `caretaker`. Test that dumping is unavailable with fewer than 3 crates.
    Behaviour is unchanged: the fixtures load the same 10 crates the shipped
    manifest still holds.
-4. **Postures in the game.** Moved up from the screens step after the first
-   hands-on session: the orders screen was still the IF/THEN builder.
+4. **Postures in the game.** *(Done.)* Moved up from the screens step after the first
+   hands-on session: the orders screen was still the IF/THEN builder. Modules
+   are worded by an optional `name` on `ModuleDef` in the colony content
+   (`the smelter`, `hab 1`), falling back to the ID; pre-M6 saves get the
+   shipped names with the other blocks. Guards are checked, not applied, until step 6.
    - `StandingOrder::describe()` next to `render()`: a card in plain words,
      e.g. *"When power drops below 25%: shut down the smelter, start heater 2,
      send heat to hab 1."* The base log reuses it in step 11.

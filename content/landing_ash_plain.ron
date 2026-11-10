@@ -49,16 +49,17 @@
         "################################",
     ],
     // When power runs short, modules are supplied in this order and the rest go dark.
+    // `name` is how plain-words text (card descriptions, the base log) names a module.
     modules: [
-        (id: "gen_01", glyph: 'G', output_kw: 30),
-        (id: "bat_01", glyph: 'B', battery: Some((capacity_kwh: 400, charge_kwh: 300))),
+        (id: "gen_01", name: Some("the generator"), glyph: 'G', output_kw: 30),
+        (id: "bat_01", name: Some("the battery"), glyph: 'B', battery: Some((capacity_kwh: 400, charge_kwh: 300))),
         (
-            id: "scrubber_01", glyph: 'O', draw_kw: 5,
+            id: "scrubber_01", name: Some("the scrubber"), glyph: 'O', draw_kw: 5,
             // Full on Sol 45 (45 x 26 hours) if it runs every hour; a dark hour counts double.
             scrubber: Some((capacity: 1170, per_running_hour: 1, per_dark_hour: 2)),
         ),
         (
-            id: "hab_01", kind: Hab, glyph: 'H', draw_kw: 3, start_temp_centi_c: Some(1400),
+            id: "hab_01", name: Some("hab 1"), kind: Hab, glyph: 'H', draw_kw: 3, start_temp_centi_c: Some(1400),
             // Hard landing: the seal is already 40% worn.
             machine: Some((
                 tolerance: (min_centi_c: 500, max_centi_c: 3000),
@@ -67,16 +68,16 @@
             )),
         ),
         (
-            id: "hab_02", kind: Hab, glyph: 'h', draw_kw: 3, start_temp_centi_c: Some(1400),
+            id: "hab_02", name: Some("hab 2"), kind: Hab, glyph: 'h', draw_kw: 3, start_temp_centi_c: Some(1400),
             machine: Some((
                 tolerance: (min_centi_c: 500, max_centi_c: 3000),
                 wear_bp_per_hour: 130,
             )),
         ),
-        (id: "heater_01", glyph: 'R', draw_kw: 8, heat_out_centi_c: 600),
-        (id: "heater_02", glyph: 'r', draw_kw: 8, heat_out_centi_c: 600, starts_active: false),
+        (id: "heater_01", name: Some("heater 1"), glyph: 'R', draw_kw: 8, heat_out_centi_c: 600),
+        (id: "heater_02", name: Some("heater 2"), glyph: 'r', draw_kw: 8, heat_out_centi_c: 600, starts_active: false),
         (
-            id: "smelter_01", glyph: 'S', draw_kw: 15, heat_out_centi_c: 1200,
+            id: "smelter_01", name: Some("the smelter"), glyph: 'S', draw_kw: 15, heat_out_centi_c: 1200,
             start_temp_centi_c: Some(1400),
             machine: Some((
                 tolerance: (min_centi_c: -500, max_centi_c: 8000),

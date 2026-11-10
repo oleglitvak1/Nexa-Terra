@@ -27,6 +27,9 @@ pub struct ColonyDef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleDef {
     pub id: ModuleId,
+    /// How plain-words text names it, e.g. "the smelter"; the ID stands in without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default)]
     pub kind: ModuleKind,
     /// Marks this module's tiles in the layout.
@@ -59,6 +62,11 @@ pub struct ModuleDef {
 }
 
 impl ModuleDef {
+    /// The name plain-words text uses: `name`, or the ID.
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(self.id.as_str())
+    }
+
     /// Generates, stores or draws power, so it must touch a power conduit.
     pub fn uses_power(&self) -> bool {
         self.output_kw > 0 || self.draw_kw > 0 || self.battery.is_some()
@@ -149,6 +157,7 @@ pub enum ContentError {
     TwoScrubbers(ModuleId),
     /// A guard needs ordered thresholds and a module that draws power.
     BadGuard(ModuleId),
+    BlankName(ModuleId),
 }
 
 impl std::fmt::Display for ContentError {
@@ -191,6 +200,7 @@ impl std::fmt::Display for ContentError {
                 "module {id}'s scrubber needs a capacity, rates (dark at least running) and a power draw"
             ),
             ContentError::TwoScrubbers(id) => write!(f, "module {id} is a second scrubber"),
+            ContentError::BlankName(id) => write!(f, "module {id}'s name is blank"),
             ContentError::BadGuard(id) => write!(
                 f,
                 "module {id}'s guard needs pause below resume, resume at most 100%, and a power draw"
@@ -215,14 +225,17 @@ impl ColonyDef {
     }
 }
 
-/// The ore, scrubber and guard blocks: each valid, and one producer and one
-/// scrubber at most. Shared by content loading and save loading.
+/// The name and the ore, scrubber and guard blocks: each valid, and one
+/// producer and one scrubber at most. Shared by content loading and save loading.
 pub(super) fn check_blocks<'a>(
     modules: impl IntoIterator<Item = &'a ModuleDef>,
 ) -> Result<(), ContentError> {
     let mut ore_seen = false;
     let mut scrubber_seen = false;
     for m in modules {
+        if m.name.as_ref().is_some_and(|n| n.trim().is_empty()) {
+            return Err(ContentError::BlankName(m.id.clone()));
+        }
         if let Some(ore) = &m.ore {
             let ok = ore.kg_per_hour > 0
                 && ore.crate_kg > 0

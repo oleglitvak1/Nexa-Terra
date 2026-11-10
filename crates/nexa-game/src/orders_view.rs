@@ -1,15 +1,17 @@
-//! The Caretaker terminal: the colony's Standing Orders and a builder for new cards.
+//! The Caretaker terminal: postures to load, the colony's Standing Orders, and
+//! (under Advanced) a builder for new cards.
 //!
+//! It opens on the postures: pick one and its cards replace the loaded ones.
 //! Cards are built by picking from lists, never typed (GDD: rule cards). Every
-//! change goes through `World::add_order` / `World::remove_order`, so the sim
-//! checks each card before storing it.
+//! change goes through `World::load_posture`, `World::add_order` or
+//! `World::remove_order`, so the sim checks each card before storing it.
 
 use crate::terminal::{Ink, Terminal};
 use crate::ui::{wrap, ListPicker, Outcome, Pick};
 use macroquad::prelude::KeyCode;
 use nexa_sim::colony::{Colony, Module};
 use nexa_sim::orders::{
-    format_centi_c, Action, EditorTuning, OrderError, OrdersDef, StandingOrder, Trigger,
+    format_centi_c, Action, EditorTuning, OrderError, OrdersDef, Preset, StandingOrder, Trigger,
     POWER_PERCENT,
 };
 use nexa_sim::World;
@@ -21,11 +23,25 @@ const TOP: usize = 3;
 const WIDTH: usize = 76;
 /// "> 1 P1 " in front of each card in the list.
 const CARD_INDENT: usize = 7;
+/// "> " in front of each posture's name; its summary lines up under the name.
+const POSTURE_INDENT: usize = 2;
 /// Priority 1 runs first, so it's where every new card starts.
 const FIRST_PRIORITY: u8 = 1;
 
 fn tuning() -> EditorTuning {
     OrdersDef::shipped().editor
+}
+
+fn card_count(n: usize) -> String {
+    match n {
+        1 => "1 CARD".into(),
+        n => format!("{n} CARDS"),
+    }
+}
+
+/// The shipped postures, in the order the picker lists them.
+fn postures() -> Vec<&'static Preset> {
+    OrdersDef::shipped().presets.values().collect()
 }
 
 /// Key help for every list-picking step.
@@ -151,6 +167,9 @@ enum Part {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Mode {
+    /// Where the terminal opens: pick a posture to load.
+    Postures,
+    /// Advanced: the cards one by one, to delete or add to.
     List,
     Draft {
         order: StandingOrder,
@@ -161,9 +180,12 @@ enum Mode {
 
 pub struct OrdersEditor {
     mode: Mode,
+    postures: ListPicker,
     list: ListPicker,
     /// The last thing the terminal has to say: a stored card or why it was refused.
     message: Option<String>,
+    /// The posture a first Enter asked to load over the cards; a second Enter loads it.
+    confirm_load: Option<usize>,
     /// The slot a first D press asked to delete; a second D deletes it.
     confirm_delete: Option<usize>,
 }
@@ -171,22 +193,75 @@ pub struct OrdersEditor {
 impl OrdersEditor {
     pub fn new() -> Self {
         Self {
-            mode: Mode::List,
+            mode: Mode::Postures,
+            postures: ListPicker::default(),
             list: ListPicker::default(),
             message: None,
+            confirm_load: None,
             confirm_delete: None,
         }
     }
 
     pub fn handle(&mut self, key: KeyCode, world: &mut World) -> Outcome {
         match std::mem::replace(&mut self.mode, Mode::List) {
-            Mode::List => return self.handle_list(key, world),
+            Mode::Postures => return self.handle_postures(key, world),
+            Mode::List => self.handle_list(key, world),
             Mode::Draft { order, step, added } => self.handle_draft(key, world, order, step, added),
         }
         Outcome::Stay
     }
 
-    fn handle_list(&mut self, key: KeyCode, world: &mut World) -> Outcome {
+    fn handle_postures(&mut self, key: KeyCode, world: &mut World) -> Outcome {
+        self.mode = Mode::Postures;
+        let postures = postures();
+        let confirming = self.confirm_load.take();
+        let enter = matches!(key, KeyCode::Enter | KeyCode::KpEnter);
+        if confirming.is_some() && !enter {
+            self.message = None;
+            // Esc only cancels the question; it takes a second Esc to leave.
+            if key == KeyCode::Escape {
+                return Outcome::Stay;
+            }
+        }
+        match key {
+            KeyCode::A => {
+                self.message = None;
+                self.mode = Mode::List;
+            }
+            // Backspace is undo in the builder; here it must not close the terminal.
+            KeyCode::Backspace => {}
+            _ => match self.postures.handle(key, postures.len()) {
+                Pick::Chosen(i) => {
+                    let posture = postures[i];
+                    if world.orders.is_empty() || confirming == Some(i) {
+                        self.message = Some(match world.load_posture(posture) {
+                            Ok(()) => {
+                                self.list = ListPicker::default();
+                                format!(
+                                    "{} LOADED: {}",
+                                    posture.name.to_uppercase(),
+                                    card_count(world.orders.len())
+                                )
+                            }
+                            Err(e) => e.to_string().to_uppercase(),
+                        });
+                    } else {
+                        self.confirm_load = Some(i);
+                        self.message = Some(format!(
+                            "REPLACE {} WITH {}? [ENTER] AGAIN TO CONFIRM",
+                            card_count(world.orders.len()),
+                            posture.name.to_uppercase()
+                        ));
+                    }
+                }
+                Pick::Back => return Outcome::Close,
+                Pick::Pending => {}
+            },
+        }
+        Outcome::Stay
+    }
+
+    fn handle_list(&mut self, key: KeyCode, world: &mut World) {
         let count = world.orders.len();
         let confirming = self.confirm_delete.take();
         let delete = matches!(key, KeyCode::D | KeyCode::Delete);
@@ -194,7 +269,7 @@ impl OrdersEditor {
             self.message = None;
             // Esc only cancels the delete; it takes a second Esc to leave.
             if key == KeyCode::Escape {
-                return Outcome::Stay;
+                return;
             }
         }
         match key {
@@ -231,11 +306,11 @@ impl OrdersEditor {
             KeyCode::Backspace => {}
             _ => {
                 if self.list.handle(key, count) == Pick::Back {
-                    return Outcome::Close;
+                    self.message = None;
+                    self.mode = Mode::Postures;
                 }
             }
         }
-        Outcome::Stay
     }
 
     fn handle_draft(
@@ -334,9 +409,13 @@ impl OrdersEditor {
     pub fn draw(&self, t: &mut Terminal, world: &World, help_row: usize) {
         let message_row = help_row - 2;
         let help = match &self.mode {
+            Mode::Postures => {
+                self.draw_postures(t, world, message_row);
+                "[UP/DOWN] SELECT   [ENTER] LOAD   [A] ADVANCED   [ESC] BACK TO COLONY"
+            }
             Mode::List => {
-                self.draw_list(t, world, message_row);
-                "[UP/DOWN] SELECT   [N] NEW CARD   [D] DELETE   [ESC] BACK TO COLONY"
+                draw_cards(t, world, TOP, message_row, Some(self.list.cursor()));
+                "[UP/DOWN] SELECT   [N] NEW CARD   [D] DELETE   [ESC] POSTURES"
             }
             Mode::Draft { order, step, .. } => draw_draft(t, world, order, step, message_row),
         };
@@ -346,49 +425,107 @@ impl OrdersEditor {
         t.put_str(LEFT, help_row, help, Ink::Dim);
     }
 
-    fn draw_list(&self, t: &mut Terminal, world: &World, bottom: usize) {
-        let orders = &world.orders;
-        t.put_str(LEFT, TOP, "STANDING ORDERS", Ink::Bright);
-        let memory = format!("MEMORY {}/{}", orders.len(), orders.tuning().memory);
-        t.put_str(LEFT + WIDTH - memory.len(), TOP, &memory, Ink::Amber);
-        if orders.is_empty() {
-            t.put_str(
-                LEFT,
-                TOP + 2,
-                "NO CARDS LOADED. THE CARETAKER WILL DO NOTHING.",
-                Ink::Dim,
-            );
-            return;
-        }
-        let cards: Vec<Vec<String>> = orders
-            .iter()
-            .map(|o| wrap(&o.render(), WIDTH - CARD_INDENT))
-            .collect();
-        let cursor = self.list.cursor();
-        // Scroll by whole cards until the selected one fits above `bottom`.
-        let height = bottom.saturating_sub(TOP + 2);
-        let mut first = 0;
-        while first < cursor && cards[first..=cursor].iter().map(Vec::len).sum::<usize>() > height {
-            first += 1;
-        }
+    /// Each posture's name and summary, then the cards loaded now below them.
+    fn draw_postures(&self, t: &mut Terminal, world: &World, bottom: usize) {
+        t.put_str(LEFT, TOP, "POSTURES", Ink::Bright);
         let mut row = TOP + 2;
-        for (slot, (order, lines)) in orders.iter().zip(&cards).enumerate().skip(first) {
-            let (mark, ink) = if slot == cursor {
+        for (i, posture) in postures().into_iter().enumerate() {
+            let selected = i == self.postures.cursor();
+            let (mark, ink) = if selected {
                 ('>', Ink::Bright)
             } else {
                 (' ', Ink::Amber)
             };
-            let head = format!("{mark} {} P{}", slot + 1, order.priority);
-            for (i, line) in lines.iter().enumerate() {
+            let mut lines = vec![(format!("{mark} {}", posture.name), ink)];
+            lines.extend(
+                wrap(&posture.summary, WIDTH - POSTURE_INDENT)
+                    .into_iter()
+                    .map(|l| (format!("{:POSTURE_INDENT$}{l}", ""), Ink::Dim)),
+            );
+            for (line, ink) in lines {
                 if row >= bottom {
                     return;
                 }
-                if i == 0 {
-                    t.put_str(LEFT, row, &head, ink);
-                }
-                t.put_str(LEFT + CARD_INDENT, row, line, ink);
+                t.put_str(LEFT, row, &line, ink);
                 row += 1;
             }
+        }
+        draw_cards(t, world, row + 1, bottom, None);
+    }
+}
+
+/// The loaded cards from `top` to above `bottom`: each card's plain-words line,
+/// then its command line dimmer. With a `cursor`, that card is marked and kept
+/// on screen; without one, cards that don't fit end in `...`.
+fn draw_cards(t: &mut Terminal, world: &World, top: usize, bottom: usize, cursor: Option<usize>) {
+    let orders = &world.orders;
+    if top >= bottom {
+        return;
+    }
+    t.put_str(LEFT, top, "STANDING ORDERS", Ink::Bright);
+    let memory = format!("MEMORY {}/{}", orders.len(), orders.tuning().memory);
+    t.put_str(LEFT + WIDTH - memory.len(), top, &memory, Ink::Amber);
+    if orders.is_empty() {
+        if top + 2 < bottom {
+            t.put_str(
+                LEFT,
+                top + 2,
+                "NO CARDS LOADED. THE CARETAKER WILL DO NOTHING.",
+                Ink::Dim,
+            );
+        }
+        return;
+    }
+    let width = WIDTH - CARD_INDENT;
+    let cards: Vec<(Vec<String>, Vec<String>)> = orders
+        .iter()
+        .map(|o| {
+            (
+                wrap(&o.describe(&world.colony), width),
+                wrap(&o.render(), width),
+            )
+        })
+        .collect();
+    let height = |c: &(Vec<String>, Vec<String>)| c.0.len() + c.1.len();
+    // Scroll by whole cards until the selected one fits above `bottom`.
+    let room = bottom.saturating_sub(top + 2);
+    let mut first = 0;
+    if let Some(cursor) = cursor {
+        while first < cursor && cards[first..=cursor].iter().map(height).sum::<usize>() > room {
+            first += 1;
+        }
+    }
+    // Without a cursor nothing scrolls, so cards that don't fit end in "...".
+    let cut = cursor.is_none() && cards.iter().map(height).sum::<usize>() > room;
+    let mut row = top + 2;
+    for (slot, (order, (words, command))) in orders.iter().zip(&cards).enumerate().skip(first) {
+        let (mark, ink) = if Some(slot) == cursor {
+            ('>', Ink::Bright)
+        } else {
+            (' ', Ink::Amber)
+        };
+        let lines = words
+            .iter()
+            .map(|l| (l, ink))
+            .chain(command.iter().map(|l| (l, Ink::Dim)));
+        for (i, (line, ink)) in lines.enumerate() {
+            if row >= bottom {
+                return;
+            }
+            if cut && row + 1 == bottom {
+                t.put_str(LEFT + CARD_INDENT, row, "...", Ink::Dim);
+                return;
+            }
+            if i == 0 {
+                t.put_str(
+                    LEFT,
+                    row,
+                    &format!("{mark} {} P{}", slot + 1, order.priority),
+                    ink,
+                );
+            }
+            t.put_str(LEFT + CARD_INDENT, row, line, ink);
+            row += 1;
         }
     }
 }

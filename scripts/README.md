@@ -2,6 +2,8 @@
 
 Line-based scripts that play the game: one step per line, `#` comments. The
 verbs and `expect` keys are documented in `crates/nexa-sim/src/script.rs`.
+`orders NAME` loads a posture from `content/standing_orders.ron`, replacing any
+cards already loaded.
 
 ```sh
 cargo run -p nexa-tools -- --script scripts/playthrough/a_nominal.nts          # headless, sim log

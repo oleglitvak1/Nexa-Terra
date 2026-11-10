@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! seed 7                    # first step only: landfall with this seed
-//! orders caretaker          # load a preset from content/standing_orders.ron
+//! orders caretaker          # replace the cards with a posture from content/standing_orders.ron
 //! run 10                    # run the colony 10 Sols
 //! run-to 10                 # run the colony until Sol 10 begins
 //! split cal,jonathan,dax    # confirm a Split: these fly, the rest stay
@@ -322,24 +322,16 @@ pub fn start(lines: &[Line]) -> World {
     }
 }
 
-/// Load a Standing Orders preset; refused if it doesn't exist or doesn't fit.
+/// Load a shipped posture through [`World::load_posture`]: its cards replace
+/// the current ones. Refused, changing nothing, if it doesn't exist or doesn't fit.
 pub fn load_preset(world: &mut World, name: &str) -> Result<(), RunError> {
-    let def = OrdersDef::shipped();
-    let preset = def
+    let preset = OrdersDef::shipped()
         .presets
         .get(name)
         .ok_or_else(|| RunError::Refused(format!("no preset named {name:?}")))?;
-    // Guards are checked here but applied once modules keep a guard setting
-    // (milestone 6, step 6); no shipped posture names one before then.
-    preset
-        .check(&world.colony, def.tuning)
-        .map_err(|e| RunError::Refused(format!("preset {name}: {e}")))?;
-    for card in &preset.cards {
-        world
-            .add_order(card.clone())
-            .map_err(|e| RunError::Refused(format!("preset {name}: {e}")))?;
-    }
-    Ok(())
+    world
+        .load_posture(preset)
+        .map_err(|e| RunError::Refused(format!("preset {name}: {e}")))
 }
 
 /// The Split a `split` step asks for: those listed fly, the rest stay.
@@ -489,6 +481,20 @@ mod tests {
         assert!(matches!(r, Err((5, RunError::Refused(_)))));
         let (_, r) = run_all("split cal,jonathon,dax");
         assert!(matches!(r, Err((1, RunError::Refused(_)))));
+    }
+
+    #[test]
+    fn orders_replaces_the_cards_and_a_refused_preset_keeps_them() {
+        let (world, r) = run_all("orders doc-example\norders protect-habs");
+        assert_eq!(r, Ok(()));
+        let protect = &OrdersDef::shipped().presets["protect-habs"].cards;
+        assert_eq!(
+            world.orders.iter().collect::<Vec<_>>(),
+            protect.iter().collect::<Vec<_>>()
+        );
+        let (world, r) = run_all("orders protect-habs\norders nonsense");
+        assert!(matches!(r, Err((2, RunError::Refused(_)))));
+        assert_eq!(world.orders.len(), protect.len());
     }
 
     #[test]
