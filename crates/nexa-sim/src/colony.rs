@@ -762,7 +762,7 @@ mod tests {
         let loaded: Colony = ron::from_str(&pre_m6_save(&c)).unwrap();
         assert_eq!(loaded, c);
         let smelter = loaded.module(&id("smelter_01")).unwrap();
-        assert_eq!(smelter.def().display_name(), "smelter");
+        assert_eq!(smelter.def().display_name(), "the smelter");
     }
 
     #[test]

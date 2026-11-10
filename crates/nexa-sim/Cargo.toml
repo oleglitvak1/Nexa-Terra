@@ -10,3 +10,4 @@ publish.workspace = true
 nexa-types.workspace = true
 serde.workspace = true
 ron.workspace = true
+indexmap.workspace = true

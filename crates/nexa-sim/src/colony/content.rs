@@ -27,7 +27,8 @@ pub struct ColonyDef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleDef {
     pub id: ModuleId,
-    /// How plain-words text names it, written bare (`name: "smelter"`). The
+    /// How plain-words text names it, verbatim and written bare, article
+    /// included where one belongs (`name: "the smelter"`, `name: "heater 2"`). The
     /// ID stands in without one.
     #[serde(
         default,

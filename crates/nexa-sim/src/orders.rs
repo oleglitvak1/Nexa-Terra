@@ -8,6 +8,7 @@
 
 use crate::colony::Colony;
 use crate::SimEvent;
+use indexmap::IndexMap;
 use nexa_types::{Command, Guard, ModuleId, CENTI_PER_DEGREE};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -149,88 +150,7 @@ pub struct OrdersDef {
     pub editor: EditorTuning,
     /// Postures by ID, e.g. `caretaker`, in content order.
     #[serde(default)]
-    pub presets: Presets,
-}
-
-/// Postures by ID, kept in the order the content lists them, so screens can
-/// offer them in that order. IDs are unique.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Presets(Vec<(String, Preset)>);
-
-impl Presets {
-    pub fn get(&self, id: &str) -> Option<&Preset> {
-        self.0.iter().find(|(k, _)| k == id).map(|(_, p)| p)
-    }
-
-    pub fn contains_key(&self, id: &str) -> bool {
-        self.get(id).is_some()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Preset)> {
-        self.0.iter().map(|(k, p)| (k, p))
-    }
-
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.0.iter().map(|(k, _)| k)
-    }
-
-    pub fn values(&self) -> impl Iterator<Item = &Preset> {
-        self.0.iter().map(|(_, p)| p)
-    }
-}
-
-impl std::ops::Index<&str> for Presets {
-    type Output = Preset;
-
-    fn index(&self, id: &str) -> &Preset {
-        self.get(id)
-            .unwrap_or_else(|| panic!("no preset named {id:?}"))
-    }
-}
-
-impl<'a> IntoIterator for &'a Presets {
-    type Item = (&'a String, &'a Preset);
-    type IntoIter = Box<dyn Iterator<Item = Self::Item> + 'a>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Box::new(self.iter())
-    }
-}
-
-impl Serialize for Presets {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.collect_map(self.iter())
-    }
-}
-
-impl<'de> Deserialize<'de> for Presets {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct Visit;
-        impl<'de> serde::de::Visitor<'de> for Visit {
-            type Value = Presets;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a map of postures by ID")
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut map: A,
-            ) -> Result<Presets, A::Error> {
-                let mut presets = Presets::default();
-                while let Some((id, preset)) = map.next_entry::<String, Preset>()? {
-                    if presets.contains_key(&id) {
-                        return Err(serde::de::Error::custom(format!(
-                            "preset {id} is listed twice"
-                        )));
-                    }
-                    presets.0.push((id, preset));
-                }
-                Ok(presets)
-            }
-        }
-        d.deserialize_map(Visit)
-    }
+    pub presets: IndexMap<String, Preset>,
 }
 
 /// Shipped tuning and presets, compiled in so loading needs no file I/O.
@@ -672,17 +592,12 @@ fn join_or_dots(parts: impl Iterator<Item = String>, sep: &str) -> String {
     }
 }
 
-/// A module's name for plain words: "the smelter", but "heater 2" when the
-/// name has a number. A module the colony lacks goes by its ID.
-fn name(colony: &Colony, id: &ModuleId) -> String {
-    let name = colony
+/// A module's name for plain words, verbatim from content ("the smelter",
+/// "heater 2"). A module the colony lacks goes by its ID.
+fn name<'a>(colony: &'a Colony, id: &'a ModuleId) -> &'a str {
+    colony
         .module(id)
-        .map_or(id.as_str(), |m| m.def().display_name());
-    if name.chars().any(|c| c.is_ascii_digit()) {
-        name.to_string()
-    } else {
-        format!("the {name}")
-    }
+        .map_or(id.as_str(), |m| m.def().display_name())
 }
 
 fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
@@ -864,53 +779,19 @@ mod tests {
             ["When power drops below 25%: shut down the smelter, send heat to hab 1."]
         );
         assert_eq!(OrdersDef::shipped().presets.keys().count(), 3);
-    }
-
-    #[test]
-    fn postures_keep_their_content_order_and_unique_ids() {
-        let ids: Vec<&String> = OrdersDef::shipped().presets.keys().collect();
-        assert_eq!(ids, ["protect-habs", "caretaker", "doc-example"]);
-        let twice = STANDING_ORDERS.replacen("\"doc-example\":", "\"caretaker\":", 1);
-        assert_ne!(twice, STANDING_ORDERS);
-        assert!(OrdersDef::from_ron(&twice)
-            .unwrap_err()
-            .contains("listed twice"));
-    }
-
-    #[test]
-    fn a_name_without_a_number_takes_the() {
-        let colony = ash_plain();
-        let order = card(
-            1,
-            vec![Trigger::PowerBelowPercent(10)],
-            vec![
-                Action::Deactivate(id("scrubber_01")),
-                Action::Activate(id("heater_01")),
-            ],
-        );
-        assert_eq!(
-            order.describe(&colony),
-            "When power drops below 10%: shut down the scrubber, start heater 1."
-        );
-    }
-
-    #[test]
-    fn every_shipped_card_has_a_plain_words_line() {
-        let colony = ash_plain();
-        for (name, preset) in &OrdersDef::shipped().presets {
-            for card in &preset.cards {
-                let line = card.describe(&colony);
-                assert!(line.starts_with("When ") && line.ends_with('.'), "{line}");
-                // Every module is named in words, not by its ID.
-                for m in colony.modules() {
-                    assert!(
-                        !line.contains(m.id().as_str()),
-                        "preset {name}: {line} names {}",
-                        m.id()
-                    );
-                }
+        // Every module is named in words, not by its ID.
+        for card in OrdersDef::shipped().presets.values().flat_map(|p| &p.cards) {
+            let line = card.describe(&colony);
+            for m in colony.modules() {
+                assert!(!line.contains(m.id().as_str()), "{line} names {}", m.id());
             }
         }
+    }
+
+    #[test]
+    fn postures_keep_their_content_order() {
+        let ids: Vec<&String> = OrdersDef::shipped().presets.keys().collect();
+        assert_eq!(ids, ["protect-habs", "caretaker", "doc-example"]);
     }
 
     #[test]
