@@ -271,9 +271,12 @@ impl Ship {
 
     /// Pack up to `n` full crates of `ore` aboard, as many as the hold has room
     /// for; returns how many were loaded. Each takes the first free
-    /// `crate_NN` ID. Used by the ore rule, and by tests and tools that need a
-    /// known hold whatever the shipped manifest holds.
-    pub fn load_crates(&mut self, n: u32, ore: &OreDef) -> u32 {
+    /// `crate_NN` ID. Callers check she is on the pad.
+    pub(crate) fn load_crates(&mut self, n: u32, ore: &OreDef) -> u32 {
+        // Never break `check`: no weightless crate...
+        if ore.crate_kg == 0 {
+            return 0;
+        }
         let want = n.min(self.hold_room());
         let mut loaded = 0;
         let mut number = 1;
@@ -283,8 +286,8 @@ impl Ship {
             if self.cargo.iter().any(|c| c.id == id) {
                 continue;
             }
-            // Never break `check`: no weightless crate, no hold past u32 kg.
-            if ore.crate_kg == 0 || self.cargo_mass_kg().checked_add(ore.crate_kg).is_none() {
+            // ...and no hold past u32 kg.
+            if self.cargo_mass_kg().checked_add(ore.crate_kg).is_none() {
                 break;
             }
             self.cargo.push(OreCrate {
@@ -298,8 +301,8 @@ impl Ship {
         loaded
     }
 
-    /// Take every crate out of the hold.
-    pub fn unload(&mut self) -> Vec<OreCrate> {
+    /// Take every crate out of the hold. Callers check she is on the pad.
+    pub(crate) fn unload(&mut self) -> Vec<OreCrate> {
         std::mem::take(&mut self.cargo)
     }
 

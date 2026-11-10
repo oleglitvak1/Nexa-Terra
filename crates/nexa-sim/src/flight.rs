@@ -371,6 +371,22 @@ impl World {
         }
     }
 
+    /// Tests and tools only, not a player action: replace the hold with up to
+    /// `crates` fresh crates of the smelter's ore, as if it had made them, so
+    /// a fixture has a known hold whatever the shipped manifest holds. Only on
+    /// the pad; returns how many were loaded.
+    #[doc(hidden)]
+    pub fn stock_hold(&mut self, crates: u32) -> Result<u32, LaunchError> {
+        if self.voyage.is_some() || self.ship.location() != &ShipLocation::Pad {
+            return Err(LaunchError::ShipAway);
+        }
+        self.ship.unload();
+        Ok(match self.colony.ore_def() {
+            Some(ore) => self.ship.load_crates(crates, ore),
+            None => 0,
+        })
+    }
+
     /// Launch The Mullein into The Slip with the shipped hazard content.
     pub fn launch(&mut self, universe: &mut dyn Universe) -> Result<Vec<SimEvent>, LaunchError> {
         self.launch_with_rules(universe, HazardsDef::shipped().clone())

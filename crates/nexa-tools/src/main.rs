@@ -14,8 +14,10 @@
 //! the interdiction's, unless one is given), each after the same SOLS on the
 //! ground, and prints outcome rates and mean fuel, cargo, credits and delay at
 //! arrival. Both run the base under `caretaker` unless `--orders` names
-//! another posture (or `none`), and fly `cal,jonathan,dax` unless `--split`
-//! says otherwise.
+//! another posture (or `none`), confirm the Split at launch as play does, and
+//! fly `cal,jonathan,dax` unless `--split` says otherwise. The ground run is
+//! there so the hold will carry the base's output once the ore rule lands
+//! (milestone 6, step 5); until then she flies the shipped manifest.
 //!
 //! Scripts: `--script FILE [--seed N]` plays a script (see `nexa_sim::script`)
 //! at full speed and logs every step and event. `--seed` overrides the
@@ -132,19 +134,6 @@ fn main() {
         }
         std::process::exit(script::run_file(&path, seed));
     }
-    // `--orders none`: run the ground Sols with no cards.
-    let no_orders = preset.as_deref() == Some("none");
-    if no_orders {
-        preset = None;
-    }
-    let launch_ground = |sols: Option<u64>, preset: Option<String>| slip::Ground {
-        sols: sols.unwrap_or(slip::LAUNCH_SOLS),
-        orders: match preset {
-            Some(name) => Some(name),
-            None if no_orders => None,
-            None => Some(slip::LAUNCH_ORDERS.to_string()),
-        },
-    };
     if let Some(seeds) = sweep {
         // A sweep flies seeds 0..N; refuse what it would ignore.
         if launch || seed.is_some() {
@@ -152,16 +141,18 @@ fn main() {
         }
         run_sweep(
             seeds,
-            &launch_ground(sols, preset),
+            &slip::Ground::from_args(sols, preset.as_deref()),
             split.as_deref().unwrap_or(slip::DEFAULT_FLIGHT),
             resolve.as_deref(),
         );
         return;
     }
     if launch {
-        let ground = launch_ground(sols, preset);
+        let ground = slip::Ground::from_args(sols, preset.as_deref());
         sols = Some(ground.sols);
         preset = ground.orders;
+    } else if preset.as_deref() == Some("none") {
+        preset = None;
     }
     if launch && split.is_none() {
         split = Some(slip::DEFAULT_FLIGHT.to_string());
@@ -200,13 +191,9 @@ fn main() {
     }
 
     let mut fires = vec![0u64; world.orders.len()];
-    if let Some(list) = &split {
-        // Log what the sim confirmed, not what was typed.
-        let now = world.now;
-        match world.confirm_split(&parse_split(list)) {
-            Ok(events) => events.iter().for_each(|e| log_event(now, e, &mut fires)),
-            Err(e) => usage(&format!("split {list:?}: {e}")),
-        }
+    // As in play, a launch confirms the Split on the pad after the ground Sols.
+    if !launch {
+        confirm_split(&mut world, split.as_deref(), &mut fires);
     }
 
     let mut tally = CrewTally::new(&world);
@@ -219,6 +206,7 @@ fn main() {
     }
 
     if let Some(option) = &option {
+        confirm_split(&mut world, split.as_deref(), &mut fires);
         run_voyage(&mut world, option, &mut fires);
         tally.record(&world);
         // The sim runs the catch-up inside arrival, out of the tally's sight.
@@ -267,6 +255,18 @@ fn main() {
             tally.strained_hours[i],
             tally.breaking_hours[i],
         );
+    }
+}
+
+/// Confirm `--split`, if given, and log what the sim confirmed, not what was typed.
+fn confirm_split(world: &mut World, split: Option<&str>, fires: &mut [u64]) {
+    let Some(list) = split else {
+        return;
+    };
+    let now = world.now;
+    match world.confirm_split(&parse_split(list)) {
+        Ok(events) => events.iter().for_each(|e| log_event(now, e, fires)),
+        Err(e) => usage(&format!("split {list:?}: {e}")),
     }
 }
 

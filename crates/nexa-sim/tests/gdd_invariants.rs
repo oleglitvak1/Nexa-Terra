@@ -31,9 +31,8 @@ fn split(world: &mut World, flight: &[&str]) -> Result<Vec<SimEvent>, SplitError
 
 /// A full hold of the smelter's crates, whatever the shipped manifest holds.
 fn fill_hold(world: &mut World) {
-    let ore = world.colony.ore_def().expect("the smelter makes ore");
-    world.ship.unload();
-    assert_eq!(world.ship.load_crates(10, ore), 10);
+    let hold = u32::from(world.ship.def().hold_crates);
+    assert_eq!(world.stock_hold(hold), Ok(hold));
 }
 
 /// A world ready to launch with the default flight crew and a full hold.

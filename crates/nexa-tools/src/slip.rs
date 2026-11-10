@@ -37,6 +37,22 @@ impl Default for Ground {
     }
 }
 
+impl Ground {
+    /// From the command line: each one left out keeps the default, and
+    /// `--orders none` runs with no cards.
+    pub fn from_args(sols: Option<u64>, orders: Option<&str>) -> Self {
+        let default = Self::default();
+        Self {
+            sols: sols.unwrap_or(default.sols),
+            orders: match orders {
+                Some("none") => None,
+                Some(name) => Some(name.to_string()),
+                None => default.orders,
+            },
+        }
+    }
+}
+
 /// A voyage's own events, and the colony's catch-up events on arrival.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Flown {
@@ -186,6 +202,8 @@ impl Tally {
 }
 
 /// Seed `seed`'s colony after `ground`, with `split` confirmed, ready to launch.
+/// As in play, the Split is confirmed at launch: everyone spends the ground
+/// Sols on the Ground.
 pub fn on_the_pad(
     seed: u64,
     ground: &Ground,
@@ -195,12 +213,12 @@ pub fn on_the_pad(
     if let Some(name) = &ground.orders {
         nexa_sim::script::load_preset(&mut world, name).map_err(|e| e.to_string())?;
     }
-    world
-        .confirm_split(split)
-        .map_err(|e| format!("split: {e}"))?;
     for _ in 0..ground.sols * TICKS_PER_SOL {
         world.tick();
     }
+    world
+        .confirm_split(split)
+        .map_err(|e| format!("split: {e}"))?;
     Ok(world)
 }
 
@@ -291,6 +309,41 @@ mod tests {
             ..bare
         };
         assert!(on_the_pad(1, &bad, &split).unwrap_err().contains("panic"));
+    }
+
+    #[test]
+    fn the_flight_crew_spend_the_ground_sols_on_the_ground() {
+        // Unattended, the habs go cold, so time on the Ground shows as stress.
+        let ground = Ground::from_args(None, Some("none"));
+        let world = on_the_pad(1, &ground, &parse_split(DEFAULT_FLIGHT)).unwrap();
+        let mut unsplit = World::landfall_seeded(1);
+        for _ in 0..ground.sols * TICKS_PER_SOL {
+            unsplit.tick();
+        }
+        let cal = CrewId::new("cal");
+        let stress = |w: &World| w.crew.vitals(&cal).unwrap().stress_bp;
+        assert!(stress(&unsplit) > 0, "the cold should stress cal");
+        assert_eq!(stress(&world), stress(&unsplit));
+        assert_eq!(world.crew.assignment(&cal), Some(Assignment::Flight));
+    }
+
+    #[test]
+    fn ground_args_keep_the_defaults_they_leave_out() {
+        assert_eq!(Ground::from_args(None, None), Ground::default());
+        assert_eq!(
+            Ground::from_args(Some(3), Some("protect-habs")),
+            Ground {
+                sols: 3,
+                orders: Some("protect-habs".into())
+            }
+        );
+        assert_eq!(
+            Ground::from_args(None, Some("none")),
+            Ground {
+                sols: LAUNCH_SOLS,
+                orders: None
+            }
+        );
     }
 
     #[test]

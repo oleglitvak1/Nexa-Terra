@@ -36,17 +36,16 @@ fn split(flight: &[&str]) -> BTreeMap<CrewId, Assignment> {
         .collect()
 }
 
-/// A full hold of the smelter's crates, whatever the shipped manifest holds.
-fn fill_hold(world: &mut World) {
-    let ore = world.colony.ore_def().expect("the smelter makes ore");
-    world.ship.unload();
-    assert_eq!(world.ship.load_crates(10, ore), 10);
-}
-
 /// Cal, Jonathan and Dax fly; Elena and Oron-3 stay with Maya. The hold is full.
 fn crewed(seed: u64) -> World {
+    let hold = u32::from(crate::ship::ShipDef::shipped().hold_crates);
+    crewed_with(seed, hold)
+}
+
+/// As [`crewed`], with exactly `crates` of the smelter's crates aboard.
+fn crewed_with(seed: u64, crates: u32) -> World {
     let mut world = World::landfall_seeded(seed);
-    fill_hold(&mut world);
+    assert_eq!(world.stock_hold(crates), Ok(crates));
     world
         .confirm_split(&split(&["cal", "jonathan", "dax"]))
         .unwrap();
@@ -405,13 +404,7 @@ fn options_the_ship_cant_pay_are_unavailable() {
 
 #[test]
 fn dumping_needs_three_crates_in_the_hold() {
-    let with = |crates: u32| {
-        let mut world = crewed(7);
-        let ore = world.colony.ore_def().unwrap().clone();
-        world.ship.unload();
-        assert_eq!(world.ship.load_crates(crates, &ore), crates);
-        at_hazard_from(world, HazardsDef::shipped().clone())
-    };
+    let with = |crates| at_hazard_from(crewed_with(7, crates), HazardsDef::shipped().clone());
     for crates in [0, 2] {
         let mut world = with(crates);
         let before = world.clone();
@@ -544,6 +537,16 @@ fn a_save_with_the_ship_out_of_place_is_rejected() {
     let edited = docked.replacen("location:Pad", "location:InSlip", 1);
     assert_ne!(edited, docked);
     assert!(ron::from_str::<World>(&edited).is_err());
+}
+
+#[test]
+fn the_hold_is_stocked_only_on_the_pad() {
+    let mut world = crewed_with(1, 4);
+    assert_eq!(world.ship.cargo().len(), 4);
+    world.launch(&mut OfflineUniverse::default()).unwrap();
+    let before = world.clone();
+    assert_eq!(world.stock_hold(10), Err(LaunchError::ShipAway));
+    assert_eq!(world, before);
 }
 
 #[test]
