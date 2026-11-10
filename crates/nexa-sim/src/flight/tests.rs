@@ -36,9 +36,17 @@ fn split(flight: &[&str]) -> BTreeMap<CrewId, Assignment> {
         .collect()
 }
 
-/// Cal, Jonathan and Dax fly; Elena and Oron-3 stay with Maya.
+/// A full hold of the smelter's crates, whatever the shipped manifest holds.
+fn fill_hold(world: &mut World) {
+    let ore = world.colony.ore_def().expect("the smelter makes ore");
+    world.ship.unload();
+    assert_eq!(world.ship.load_crates(10, ore), 10);
+}
+
+/// Cal, Jonathan and Dax fly; Elena and Oron-3 stay with Maya. The hold is full.
 fn crewed(seed: u64) -> World {
     let mut world = World::landfall_seeded(seed);
+    fill_hold(&mut world);
     world
         .confirm_split(&split(&["cal", "jonathan", "dax"]))
         .unwrap();
@@ -65,7 +73,10 @@ fn rigged(option: &str, outcome: Outcome) -> HazardsDef {
 
 /// Launched and stopped at the interdiction on Sol 2.
 fn at_hazard(rules: HazardsDef) -> World {
-    let mut world = crewed(7);
+    at_hazard_from(crewed(7), rules)
+}
+
+fn at_hazard_from(mut world: World, rules: HazardsDef) -> World {
     world
         .launch_with_rules(&mut interdiction_on(&[2]), rules)
         .unwrap();
@@ -390,6 +401,30 @@ fn options_the_ship_cant_pay_are_unavailable() {
         );
         assert_eq!(world, before);
     }
+}
+
+#[test]
+fn dumping_needs_three_crates_in_the_hold() {
+    let with = |crates: u32| {
+        let mut world = crewed(7);
+        let ore = world.colony.ore_def().unwrap().clone();
+        world.ship.unload();
+        assert_eq!(world.ship.load_crates(crates, &ore), crates);
+        at_hazard_from(world, HazardsDef::shipped().clone())
+    };
+    for crates in [0, 2] {
+        let mut world = with(crates);
+        let before = world.clone();
+        assert_eq!(
+            world.resolve_hazard("dump"),
+            Err(FlightError::Unavailable(Unavailable::NotEnoughCrates)),
+            "{crates} crates"
+        );
+        assert_eq!(world, before);
+    }
+    let mut world = with(3);
+    world.resolve_hazard("dump").unwrap();
+    assert!(world.ship.cargo().is_empty());
 }
 
 #[test]

@@ -8,12 +8,14 @@
 //! Usage: `nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]`
 //! (presets: content/standing_orders.ron; IDs: content/crew.ron).
 //!
-//! The Slip: `--launch --resolve OPTION [--seed N]` runs SOLS (default 0) on
+//! The Slip: `--launch --resolve OPTION [--seed N]` runs SOLS (default 10) on
 //! the ground, launches, answers every hazard with OPTION and prints a voyage
 //! report. `--sweep N [--resolve OPTION]` flies seeds 0..N per option (all of
-//! the interdiction's, unless one is given) and prints outcome rates and mean
-//! fuel, cargo, credits and delay at arrival. Both fly `cal,jonathan,dax`
-//! unless `--split` says otherwise.
+//! the interdiction's, unless one is given), each after the same SOLS on the
+//! ground, and prints outcome rates and mean fuel, cargo, credits and delay at
+//! arrival. Both run the base under `caretaker` unless `--orders` names
+//! another posture (or `none`), and fly `cal,jonathan,dax` unless `--split`
+//! says otherwise.
 //!
 //! Scripts: `--script FILE [--seed N]` plays a script (see `nexa_sim::script`)
 //! at full speed and logs every step and event. `--seed` overrides the
@@ -130,17 +132,36 @@ fn main() {
         }
         std::process::exit(script::run_file(&path, seed));
     }
+    // `--orders none`: run the ground Sols with no cards.
+    let no_orders = preset.as_deref() == Some("none");
+    if no_orders {
+        preset = None;
+    }
+    let launch_ground = |sols: Option<u64>, preset: Option<String>| slip::Ground {
+        sols: sols.unwrap_or(slip::LAUNCH_SOLS),
+        orders: match preset {
+            Some(name) => Some(name),
+            None if no_orders => None,
+            None => Some(slip::LAUNCH_ORDERS.to_string()),
+        },
+    };
     if let Some(seeds) = sweep {
-        // A sweep flies from landfall over seeds 0..N; refuse what it would ignore.
-        if launch || seed.is_some() || sols.is_some() || preset.is_some() {
-            usage("--sweep takes only --split and --resolve");
+        // A sweep flies seeds 0..N; refuse what it would ignore.
+        if launch || seed.is_some() {
+            usage("--sweep takes only SOLS, --orders, --split and --resolve");
         }
         run_sweep(
             seeds,
+            &launch_ground(sols, preset),
             split.as_deref().unwrap_or(slip::DEFAULT_FLIGHT),
             resolve.as_deref(),
         );
         return;
+    }
+    if launch {
+        let ground = launch_ground(sols, preset);
+        sols = Some(ground.sols);
+        preset = ground.orders;
     }
     if launch && split.is_none() {
         split = Some(slip::DEFAULT_FLIGHT.to_string());
@@ -154,7 +175,7 @@ fn main() {
     if !launch && seed.is_some() {
         usage("--seed needs --launch");
     }
-    let sols = sols.unwrap_or(if launch { 0 } else { DEFAULT_SOLS });
+    let sols = sols.unwrap_or(DEFAULT_SOLS);
 
     let mut world = match seed {
         Some(seed) => World::landfall_seeded(seed),
@@ -329,7 +350,7 @@ fn run_voyage(world: &mut World, option: &str, fires: &mut [u64]) {
 }
 
 /// Outcome rates and arrival means per option, for tuning content/hazards.ron.
-fn run_sweep(seeds: u64, split: &str, only: Option<&str>) {
+fn run_sweep(seeds: u64, ground: &slip::Ground, split: &str, only: Option<&str>) {
     let hazard = &HazardsDef::shipped().hazards[0];
     let options: Vec<&str> = match only {
         Some(option) => vec![option],
@@ -337,12 +358,14 @@ fn run_sweep(seeds: u64, split: &str, only: Option<&str>) {
     };
     let assignments = parse_split(split);
     println!(
-        "[SWEEP] {}: {seeds} seeds per option, flying {split}",
-        hazard.id
+        "[SWEEP] {}: {seeds} seeds per option, flying {split} after {} Sols under {}",
+        hazard.id,
+        ground.sols,
+        ground.orders.as_deref().unwrap_or("no orders")
     );
     println!("[SWEEP] {}", slip::Tally::HEADER);
     for option in options {
-        match slip::sweep(seeds, &assignments, option) {
+        match slip::sweep(seeds, ground, &assignments, option) {
             Ok(tally) => println!("[SWEEP] {}", tally.row(option)),
             Err(e) => usage(&e),
         }
@@ -357,8 +380,9 @@ fn usage(problem: &str) -> ! {
         .collect();
     eprintln!("nexa-tools: {problem}");
     eprintln!("usage: nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]");
-    eprintln!("       nexa-tools [SOLS] --launch --resolve OPTION [--seed N] [--split ...]");
-    eprintln!("       nexa-tools --sweep N [--resolve OPTION] [--split ...]");
+    eprintln!("       nexa-tools [SOLS] --launch --resolve OPTION [--seed N] [--orders ...] [--split ...]");
+    eprintln!("       nexa-tools [SOLS] --sweep N [--resolve OPTION] [--orders ...] [--split ...]");
+    eprintln!("       (before a launch or sweep: SOLS defaults to 10, --orders to caretaker; --orders none for no cards)");
     eprintln!("       nexa-tools [--headless] --script FILE [--seed N]");
     let options: Vec<&str> = HazardsDef::shipped().hazards[0]
         .options
@@ -366,7 +390,7 @@ fn usage(problem: &str) -> ! {
         .map(|o| o.id.as_str())
         .collect();
     eprintln!("options: {}", options.join(", "));
-    eprintln!("presets: {}", presets.join(", "));
+    eprintln!("presets: {}, none", presets.join(", "));
     let crew: Vec<String> = World::landfall()
         .crew
         .members()

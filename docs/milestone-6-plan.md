@@ -170,7 +170,7 @@ hands-on session shows what has been built so far.
    every preset has a name and summary, preset guards name guardable modules. New state fields get serde defaults;
    pre-M6 saves get the shipped blocks by module ID. Tests for parsing,
    rejection and old-save loading.
-3. **Fixture fallout.** A `Ship::load_crates` helper so flight tests,
+3. **Fixture fallout.** *(Done.)* A `Ship::load_crates` helper so flight tests,
    `gdd_invariants::ready()` and `ship.rs` tests start with 10 crates
    explicitly. `nexa-tools --launch` / `--sweep` default to 10 Sols under
    `caretaker`. Test that dumping is unavailable with fewer than 3 crates.
