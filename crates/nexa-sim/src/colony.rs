@@ -125,6 +125,12 @@ impl Colony {
         self.ore_kg
     }
 
+    /// The ore producer's block: what its crates hold and weigh. Content
+    /// allows at most one producer.
+    pub fn ore_def(&self) -> Option<&OreDef> {
+        self.modules.iter().find_map(|m| m.def.ore.as_ref())
+    }
+
     /// Whether `guard` may be set on this module: it exists, draws power,
     /// and the thresholds are ordered.
     pub fn check_guard(&self, id: &ModuleId, guard: Guard) -> Result<(), CommandError> {

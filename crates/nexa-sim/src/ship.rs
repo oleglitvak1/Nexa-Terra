@@ -3,6 +3,7 @@
 //! Like the colony's modules, the ship keeps its content definition in the
 //! save, so a balance change reaches only new games.
 
+use crate::colony::OreDef;
 use nexa_types::StationId;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -263,6 +264,48 @@ impl Ship {
         (weighted / mass) as u8
     }
 
+    /// Crates the hold still takes.
+    pub fn hold_room(&self) -> u32 {
+        u32::from(self.def.hold_crates).saturating_sub(self.cargo.len() as u32)
+    }
+
+    /// Pack up to `n` full crates of `ore` aboard, as many as the hold has room
+    /// for; returns how many were loaded. Each takes the first free
+    /// `crate_NN` ID. Callers check she is on the pad.
+    pub(crate) fn load_crates(&mut self, n: u32, ore: &OreDef) -> u32 {
+        // Never break `check`: no weightless crate...
+        if ore.crate_kg == 0 {
+            return 0;
+        }
+        let want = n.min(self.hold_room());
+        let mut loaded = 0;
+        let mut number = 1;
+        while loaded < want {
+            let id = format!("crate_{number:02}");
+            number += 1;
+            if self.cargo.iter().any(|c| c.id == id) {
+                continue;
+            }
+            // ...and no hold past u32 kg.
+            if self.cargo_mass_kg().checked_add(ore.crate_kg).is_none() {
+                break;
+            }
+            self.cargo.push(OreCrate {
+                id,
+                cargo: ore.cargo.clone(),
+                mass_kg: ore.crate_kg,
+                integrity_pct: MAX_INTEGRITY_PCT,
+            });
+            loaded += 1;
+        }
+        loaded
+    }
+
+    /// Take every crate out of the hold. Callers check she is on the pad.
+    pub(crate) fn unload(&mut self) -> Vec<OreCrate> {
+        std::mem::take(&mut self.cargo)
+    }
+
     /// Burn up to `liters`; returns what was burned.
     pub(crate) fn burn(&mut self, liters: u32) -> u32 {
         let burned = liters.min(self.fuel_l);
@@ -335,10 +378,9 @@ mod tests {
         assert_eq!(def.overclock_burn_l, 150);
         assert_eq!(def.route.transit_sols, 5);
         assert_eq!(def.route.destination, StationId::new("barge_77"));
+        assert_eq!(def.hold_crates, 10);
         let ship = Ship::new(def);
         assert_eq!(ship.location(), &ShipLocation::Pad);
-        assert_eq!(ship.cargo_mass_kg(), 10_000);
-        assert_eq!(ship.cargo_integrity_pct(), 100);
     }
 
     #[test]
@@ -416,7 +458,7 @@ mod tests {
 
     #[test]
     fn burns_pods_and_cargo_never_go_below_zero() {
-        let mut ship = Ship::default();
+        let mut ship = with_crates(10);
         assert_eq!(ship.burn(1200), 1000);
         assert_eq!(ship.fuel_l(), 0);
         assert_eq!(ship.spend_pods(5), 1);
@@ -429,6 +471,62 @@ mod tests {
         assert_eq!(ship.cargo_integrity_pct(), 0);
         assert_eq!(ship.dump_crates(20), (7, 7000));
         assert_eq!(ship.cargo_integrity_pct(), 0);
+    }
+
+    fn silicon() -> OreDef {
+        OreDef {
+            kg_per_hour: 50,
+            crate_kg: 1000,
+            cargo: "raw silicon".into(),
+        }
+    }
+
+    /// The shipped Mullein with her hold emptied, then `n` crates loaded.
+    fn with_crates(n: u32) -> Ship {
+        let mut ship = Ship::default();
+        ship.unload();
+        assert_eq!(ship.load_crates(n, &silicon()), n);
+        ship
+    }
+
+    #[test]
+    fn loading_fills_the_hold_and_stops_when_it_is_full() {
+        let mut ship = Ship::default();
+        assert_eq!(ship.unload().len(), 10);
+        assert_eq!((ship.cargo_mass_kg(), ship.hold_room()), (0, 10));
+        assert_eq!(ship.load_crates(4, &silicon()), 4);
+        assert_eq!(ship.load_crates(9, &silicon()), 6);
+        assert_eq!((ship.hold_room(), ship.load_crates(1, &silicon())), (0, 0));
+        assert_eq!(ship.cargo_mass_kg(), 10_000);
+        assert_eq!(ship.cargo_integrity_pct(), 100);
+        assert_eq!(ship.check(), Ok(()));
+        assert!(ship.cargo().iter().all(|c| c.cargo == "raw silicon"));
+    }
+
+    #[test]
+    fn loaded_crates_take_the_first_free_ids() {
+        let mut ship = with_crates(4);
+        let ids = |s: &Ship| s.cargo().iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&ship), ["crate_01", "crate_02", "crate_03", "crate_04"]);
+        ship.cargo.remove(1);
+        ship.load_crates(2, &silicon());
+        assert_eq!(
+            ids(&ship),
+            ["crate_01", "crate_03", "crate_04", "crate_02", "crate_05"]
+        );
+        assert_eq!(ship.check(), Ok(()));
+    }
+
+    #[test]
+    fn loading_never_makes_a_hold_check_refuses() {
+        let mut ship = with_crates(0);
+        let mut weightless = silicon();
+        weightless.crate_kg = 0;
+        assert_eq!(ship.load_crates(3, &weightless), 0);
+        let mut heavy = silicon();
+        heavy.crate_kg = u32::MAX;
+        assert_eq!(ship.load_crates(3, &heavy), 1);
+        assert_eq!(ship.check(), Ok(()));
     }
 
     #[test]

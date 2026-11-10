@@ -29,9 +29,16 @@ fn split(world: &mut World, flight: &[&str]) -> Result<Vec<SimEvent>, SplitError
     world.confirm_split(&script::assignments(&ids(flight)))
 }
 
-/// A world ready to launch with the default flight crew.
+/// A full hold of the smelter's crates, whatever the shipped manifest holds.
+fn fill_hold(world: &mut World) {
+    let hold = u32::from(world.ship.def().hold_crates);
+    assert_eq!(world.stock_hold(hold), Ok(hold));
+}
+
+/// A world ready to launch with the default flight crew and a full hold.
 fn ready(seed: u64) -> World {
     let mut world = World::landfall_seeded(seed);
+    fill_hold(&mut world);
     split(&mut world, DEFAULT_FLIGHT).unwrap();
     world
 }
@@ -137,6 +144,7 @@ fn an_overclock_that_would_strand_the_ship_is_unavailable() {
         start_fuel_l: 450,
         ..ShipDef::shipped().clone()
     });
+    fill_hold(&mut world);
     world.launch(&mut interdictions_on(&[1])).unwrap();
     world.advance_voyage().unwrap();
     assert_eq!(world.ship.fuel_l(), 100);

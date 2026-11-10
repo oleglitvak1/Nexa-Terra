@@ -8,12 +8,16 @@
 //! Usage: `nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]`
 //! (presets: content/standing_orders.ron; IDs: content/crew.ron).
 //!
-//! The Slip: `--launch --resolve OPTION [--seed N]` runs SOLS (default 0) on
+//! The Slip: `--launch --resolve OPTION [--seed N]` runs SOLS (default 10) on
 //! the ground, launches, answers every hazard with OPTION and prints a voyage
 //! report. `--sweep N [--resolve OPTION]` flies seeds 0..N per option (all of
-//! the interdiction's, unless one is given) and prints outcome rates and mean
-//! fuel, cargo, credits and delay at arrival. Both fly `cal,jonathan,dax`
-//! unless `--split` says otherwise.
+//! the interdiction's, unless one is given), each after the same SOLS on the
+//! ground, and prints outcome rates and mean fuel, cargo, credits and delay at
+//! arrival. Both run the base under `caretaker` unless `--orders` names
+//! another posture (or `none`), confirm the Split at launch as play does, and
+//! fly `cal,jonathan,dax` unless `--split` says otherwise. The ground run is
+//! there so the hold will carry the base's output once the ore rule lands
+//! (milestone 6, step 5); until then she flies the shipped manifest.
 //!
 //! Scripts: `--script FILE [--seed N]` plays a script (see `nexa_sim::script`)
 //! at full speed and logs every step and event. `--seed` overrides the
@@ -131,16 +135,24 @@ fn main() {
         std::process::exit(script::run_file(&path, seed));
     }
     if let Some(seeds) = sweep {
-        // A sweep flies from landfall over seeds 0..N; refuse what it would ignore.
-        if launch || seed.is_some() || sols.is_some() || preset.is_some() {
-            usage("--sweep takes only --split and --resolve");
+        // A sweep flies seeds 0..N; refuse what it would ignore.
+        if launch || seed.is_some() {
+            usage("--sweep takes only SOLS, --orders, --split and --resolve");
         }
         run_sweep(
             seeds,
+            &slip::Ground::from_args(sols, preset.as_deref()),
             split.as_deref().unwrap_or(slip::DEFAULT_FLIGHT),
             resolve.as_deref(),
         );
         return;
+    }
+    if launch {
+        let ground = slip::Ground::from_args(sols, preset.as_deref());
+        sols = Some(ground.sols);
+        preset = ground.orders;
+    } else if preset.as_deref() == Some("none") {
+        preset = None;
     }
     if launch && split.is_none() {
         split = Some(slip::DEFAULT_FLIGHT.to_string());
@@ -154,7 +166,7 @@ fn main() {
     if !launch && seed.is_some() {
         usage("--seed needs --launch");
     }
-    let sols = sols.unwrap_or(if launch { 0 } else { DEFAULT_SOLS });
+    let sols = sols.unwrap_or(DEFAULT_SOLS);
 
     let mut world = match seed {
         Some(seed) => World::landfall_seeded(seed),
@@ -179,13 +191,9 @@ fn main() {
     }
 
     let mut fires = vec![0u64; world.orders.len()];
-    if let Some(list) = &split {
-        // Log what the sim confirmed, not what was typed.
-        let now = world.now;
-        match world.confirm_split(&parse_split(list)) {
-            Ok(events) => events.iter().for_each(|e| log_event(now, e, &mut fires)),
-            Err(e) => usage(&format!("split {list:?}: {e}")),
-        }
+    // As in play, a launch confirms the Split on the pad after the ground Sols.
+    if !launch {
+        confirm_split(&mut world, split.as_deref(), &mut fires);
     }
 
     let mut tally = CrewTally::new(&world);
@@ -198,6 +206,7 @@ fn main() {
     }
 
     if let Some(option) = &option {
+        confirm_split(&mut world, split.as_deref(), &mut fires);
         run_voyage(&mut world, option, &mut fires);
         tally.record(&world);
         // The sim runs the catch-up inside arrival, out of the tally's sight.
@@ -246,6 +255,18 @@ fn main() {
             tally.strained_hours[i],
             tally.breaking_hours[i],
         );
+    }
+}
+
+/// Confirm `--split`, if given, and log what the sim confirmed, not what was typed.
+fn confirm_split(world: &mut World, split: Option<&str>, fires: &mut [u64]) {
+    let Some(list) = split else {
+        return;
+    };
+    let now = world.now;
+    match world.confirm_split(&parse_split(list)) {
+        Ok(events) => events.iter().for_each(|e| log_event(now, e, fires)),
+        Err(e) => usage(&format!("split {list:?}: {e}")),
     }
 }
 
@@ -329,7 +350,7 @@ fn run_voyage(world: &mut World, option: &str, fires: &mut [u64]) {
 }
 
 /// Outcome rates and arrival means per option, for tuning content/hazards.ron.
-fn run_sweep(seeds: u64, split: &str, only: Option<&str>) {
+fn run_sweep(seeds: u64, ground: &slip::Ground, split: &str, only: Option<&str>) {
     let hazard = &HazardsDef::shipped().hazards[0];
     let options: Vec<&str> = match only {
         Some(option) => vec![option],
@@ -337,12 +358,14 @@ fn run_sweep(seeds: u64, split: &str, only: Option<&str>) {
     };
     let assignments = parse_split(split);
     println!(
-        "[SWEEP] {}: {seeds} seeds per option, flying {split}",
-        hazard.id
+        "[SWEEP] {}: {seeds} seeds per option, flying {split} after {} Sols under {}",
+        hazard.id,
+        ground.sols,
+        ground.orders.as_deref().unwrap_or("no orders")
     );
     println!("[SWEEP] {}", slip::Tally::HEADER);
     for option in options {
-        match slip::sweep(seeds, &assignments, option) {
+        match slip::sweep(seeds, ground, &assignments, option) {
             Ok(tally) => println!("[SWEEP] {}", tally.row(option)),
             Err(e) => usage(&e),
         }
@@ -357,8 +380,9 @@ fn usage(problem: &str) -> ! {
         .collect();
     eprintln!("nexa-tools: {problem}");
     eprintln!("usage: nexa-tools [SOLS] [--orders PRESET] [--split ID,ID,...]");
-    eprintln!("       nexa-tools [SOLS] --launch --resolve OPTION [--seed N] [--split ...]");
-    eprintln!("       nexa-tools --sweep N [--resolve OPTION] [--split ...]");
+    eprintln!("       nexa-tools [SOLS] --launch --resolve OPTION [--seed N] [--orders ...] [--split ...]");
+    eprintln!("       nexa-tools [SOLS] --sweep N [--resolve OPTION] [--orders ...] [--split ...]");
+    eprintln!("       (before a launch or sweep: SOLS defaults to 10, --orders to caretaker; --orders none for no cards)");
     eprintln!("       nexa-tools [--headless] --script FILE [--seed N]");
     let options: Vec<&str> = HazardsDef::shipped().hazards[0]
         .options
@@ -366,7 +390,7 @@ fn usage(problem: &str) -> ! {
         .map(|o| o.id.as_str())
         .collect();
     eprintln!("options: {}", options.join(", "));
-    eprintln!("presets: {}", presets.join(", "));
+    eprintln!("presets: {}, none", presets.join(", "));
     let crew: Vec<String> = World::landfall()
         .crew
         .members()

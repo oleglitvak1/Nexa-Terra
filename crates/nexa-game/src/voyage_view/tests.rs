@@ -21,6 +21,9 @@ struct Session {
 fn launched_with(rules: HazardsDef, credits: u32) -> Session {
     let mut world = World::landfall_seeded(9);
     world.credits = credits;
+    // A full hold of the smelter's crates, whatever the shipped manifest holds.
+    let hold = u32::from(world.ship.def().hold_crates);
+    assert_eq!(world.stock_hold(hold), Ok(hold));
     let split: BTreeMap<CrewId, Assignment> = ["cal", "jonathan", "dax"]
         .iter()
         .map(|id| (CrewId::new(*id), Assignment::Flight))

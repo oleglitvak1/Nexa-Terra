@@ -6,12 +6,52 @@ use nexa_sim::crew::Assignment;
 use nexa_sim::flight::{FlightError, Resolution};
 use nexa_sim::universe::OfflineUniverse;
 use nexa_sim::{SimEvent, World};
-use nexa_types::CrewId;
+use nexa_types::{CrewId, TICKS_PER_SOL};
 use std::collections::BTreeMap;
 
 /// Who flies when no `--split` is given: the pilot and the three specialists'
 /// worth of checks (Cal, Jonathan, Dax), leaving Elena and Oron-3 with Maya.
 pub const DEFAULT_FLIGHT: &str = "cal,jonathan,dax";
+
+/// Sols on the ground before a launch or a sweep's voyages, unless SOLS says
+/// otherwise: the slice's planned launch day.
+pub const LAUNCH_SOLS: u64 = 10;
+
+/// The posture the base runs under before a launch or a sweep's voyages,
+/// unless `--orders` says otherwise; `--orders none` runs it with no cards.
+pub const LAUNCH_ORDERS: &str = "caretaker";
+
+/// What the colony does before launch: `sols` on the ground under `orders`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ground {
+    pub sols: u64,
+    pub orders: Option<String>,
+}
+
+impl Default for Ground {
+    fn default() -> Self {
+        Self {
+            sols: LAUNCH_SOLS,
+            orders: Some(LAUNCH_ORDERS.to_string()),
+        }
+    }
+}
+
+impl Ground {
+    /// From the command line: each one left out keeps the default, and
+    /// `--orders none` runs with no cards.
+    pub fn from_args(sols: Option<u64>, orders: Option<&str>) -> Self {
+        let default = Self::default();
+        Self {
+            sols: sols.unwrap_or(default.sols),
+            orders: match orders {
+                Some("none") => None,
+                Some(name) => Some(name.to_string()),
+                None => default.orders,
+            },
+        }
+    }
+}
 
 /// A voyage's own events, and the colony's catch-up events on arrival.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -161,18 +201,37 @@ impl Tally {
     }
 }
 
-/// Fly seeds `0..seeds` from landfall with `split`, every hazard answered by `option`.
+/// Seed `seed`'s colony after `ground`, with `split` confirmed, ready to launch.
+/// As in play, the Split is confirmed at launch: everyone spends the ground
+/// Sols on the Ground.
+pub fn on_the_pad(
+    seed: u64,
+    ground: &Ground,
+    split: &BTreeMap<CrewId, Assignment>,
+) -> Result<World, String> {
+    let mut world = World::landfall_seeded(seed);
+    if let Some(name) = &ground.orders {
+        nexa_sim::script::load_preset(&mut world, name).map_err(|e| e.to_string())?;
+    }
+    for _ in 0..ground.sols * TICKS_PER_SOL {
+        world.tick();
+    }
+    world
+        .confirm_split(split)
+        .map_err(|e| format!("split: {e}"))?;
+    Ok(world)
+}
+
+/// Fly seeds `0..seeds` after `ground` with `split`, every hazard answered by `option`.
 pub fn sweep(
     seeds: u64,
+    ground: &Ground,
     split: &BTreeMap<CrewId, Assignment>,
     option: &str,
 ) -> Result<Tally, String> {
     let mut tally = Tally::default();
     for seed in 0..seeds {
-        let mut world = World::landfall_seeded(seed);
-        world
-            .confirm_split(split)
-            .map_err(|e| format!("split: {e}"))?;
+        let mut world = on_the_pad(seed, ground, split)?;
         let flown = fly(&mut world, option).map_err(|e| format!("seed {seed}: {e}"))?;
         tally.add(&world, &flown);
     }
@@ -218,22 +277,88 @@ mod tests {
     #[test]
     fn a_sweep_counts_every_roll_and_certain_options_never_roll_badly() {
         let split = parse_split(DEFAULT_FLIGHT);
-        let tally = sweep(40, &split, "ecm").unwrap();
+        let tally = sweep(40, &Ground::default(), &split, "ecm").unwrap();
         assert_eq!(tally.voyages, 40);
         assert_eq!(tally.outcomes.iter().sum::<u64>(), 40);
         let total =
             tally.rate(Outcome::Success) + tally.rate(Outcome::Partial) + tally.rate(Outcome::Fail);
         assert!((total - 100.0).abs() < 1e-9);
-        let pay = sweep(10, &split, "pay").unwrap();
+        let pay = sweep(10, &Ground::default(), &split, "pay").unwrap();
         assert_eq!(pay.outcomes, [0, 0, 10]);
         assert_eq!(pay.credits, 10 * 200);
         assert!(tally.row("ecm").starts_with("ecm "));
     }
 
     #[test]
+    fn the_pad_is_reached_after_the_ground_sols_under_the_posture() {
+        let split = parse_split(DEFAULT_FLIGHT);
+        let world = on_the_pad(1, &Ground::default(), &split).unwrap();
+        assert_eq!(world.now.sol(), LAUNCH_SOLS);
+        let cards = nexa_sim::orders::OrdersDef::shipped().presets[LAUNCH_ORDERS]
+            .cards
+            .len();
+        assert_eq!(world.orders.len(), cards);
+        let bare = Ground {
+            sols: 0,
+            orders: None,
+        };
+        let world = on_the_pad(1, &bare, &split).unwrap();
+        assert_eq!((world.now.0, world.orders.len()), (0, 0));
+        let bad = Ground {
+            orders: Some("panic".into()),
+            ..bare
+        };
+        assert!(on_the_pad(1, &bad, &split).unwrap_err().contains("panic"));
+    }
+
+    #[test]
+    fn the_flight_crew_spend_the_ground_sols_on_the_ground() {
+        // Unattended, the habs go cold, so time on the Ground shows as stress.
+        let ground = Ground::from_args(None, Some("none"));
+        let world = on_the_pad(1, &ground, &parse_split(DEFAULT_FLIGHT)).unwrap();
+        let mut unsplit = World::landfall_seeded(1);
+        for _ in 0..ground.sols * TICKS_PER_SOL {
+            unsplit.tick();
+        }
+        let cal = CrewId::new("cal");
+        let stress = |w: &World| w.crew.vitals(&cal).unwrap().stress_bp;
+        assert!(stress(&unsplit) > 0, "the cold should stress cal");
+        assert_eq!(stress(&world), stress(&unsplit));
+        assert_eq!(world.crew.assignment(&cal), Some(Assignment::Flight));
+    }
+
+    #[test]
+    fn ground_args_keep_the_defaults_they_leave_out() {
+        assert_eq!(Ground::from_args(None, None), Ground::default());
+        assert_eq!(
+            Ground::from_args(Some(3), Some("protect-habs")),
+            Ground {
+                sols: 3,
+                orders: Some("protect-habs".into())
+            }
+        );
+        assert_eq!(
+            Ground::from_args(None, Some("none")),
+            Ground {
+                sols: LAUNCH_SOLS,
+                orders: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_sweep_carries_the_crates_the_ground_run_left_aboard() {
+        // Dumping takes 3 of whatever the hold has at launch.
+        let split = parse_split(DEFAULT_FLIGHT);
+        let world = on_the_pad(0, &Ground::default(), &split).unwrap();
+        let aboard = world.ship.cargo().len() as u64;
+        let dump = sweep(5, &Ground::default(), &split, "dump").unwrap();
+        assert_eq!(dump.crates, 5 * (aboard - 3));
+    }
+
+    #[test]
     fn describe_reads_like_a_log_line() {
-        let mut world = World::landfall_seeded(1);
-        world.confirm_split(&parse_split(DEFAULT_FLIGHT)).unwrap();
+        let mut world = on_the_pad(1, &Ground::default(), &parse_split(DEFAULT_FLIGHT)).unwrap();
         let flown = fly(&mut world, "dump").unwrap();
         let r = flown.resolutions().next().unwrap();
         assert_eq!(describe(r), "dump -> success; paid 3 crates (3000 kg)");

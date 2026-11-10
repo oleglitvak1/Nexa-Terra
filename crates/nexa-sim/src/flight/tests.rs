@@ -36,9 +36,16 @@ fn split(flight: &[&str]) -> BTreeMap<CrewId, Assignment> {
         .collect()
 }
 
-/// Cal, Jonathan and Dax fly; Elena and Oron-3 stay with Maya.
+/// Cal, Jonathan and Dax fly; Elena and Oron-3 stay with Maya. The hold is full.
 fn crewed(seed: u64) -> World {
+    let hold = u32::from(crate::ship::ShipDef::shipped().hold_crates);
+    crewed_with(seed, hold)
+}
+
+/// As [`crewed`], with exactly `crates` of the smelter's crates aboard.
+fn crewed_with(seed: u64, crates: u32) -> World {
     let mut world = World::landfall_seeded(seed);
+    assert_eq!(world.stock_hold(crates), Ok(crates));
     world
         .confirm_split(&split(&["cal", "jonathan", "dax"]))
         .unwrap();
@@ -65,7 +72,10 @@ fn rigged(option: &str, outcome: Outcome) -> HazardsDef {
 
 /// Launched and stopped at the interdiction on Sol 2.
 fn at_hazard(rules: HazardsDef) -> World {
-    let mut world = crewed(7);
+    at_hazard_from(crewed(7), rules)
+}
+
+fn at_hazard_from(mut world: World, rules: HazardsDef) -> World {
     world
         .launch_with_rules(&mut interdiction_on(&[2]), rules)
         .unwrap();
@@ -393,6 +403,24 @@ fn options_the_ship_cant_pay_are_unavailable() {
 }
 
 #[test]
+fn dumping_needs_three_crates_in_the_hold() {
+    let with = |crates| at_hazard_from(crewed_with(7, crates), HazardsDef::shipped().clone());
+    for crates in [0, 2] {
+        let mut world = with(crates);
+        let before = world.clone();
+        assert_eq!(
+            world.resolve_hazard("dump"),
+            Err(FlightError::Unavailable(Unavailable::NotEnoughCrates)),
+            "{crates} crates"
+        );
+        assert_eq!(world, before);
+    }
+    let mut world = with(3);
+    world.resolve_hazard("dump").unwrap();
+    assert!(world.ship.cargo().is_empty());
+}
+
+#[test]
 fn an_overclock_must_leave_fuel_for_the_way_home() {
     let mut rules = HazardsDef::shipped().clone();
     for o in &mut rules.hazards[0].options {
@@ -509,6 +537,16 @@ fn a_save_with_the_ship_out_of_place_is_rejected() {
     let edited = docked.replacen("location:Pad", "location:InSlip", 1);
     assert_ne!(edited, docked);
     assert!(ron::from_str::<World>(&edited).is_err());
+}
+
+#[test]
+fn the_hold_is_stocked_only_on_the_pad() {
+    let mut world = crewed_with(1, 4);
+    assert_eq!(world.ship.cargo().len(), 4);
+    world.launch(&mut OfflineUniverse::default()).unwrap();
+    let before = world.clone();
+    assert_eq!(world.stock_hold(10), Err(LaunchError::ShipAway));
+    assert_eq!(world, before);
 }
 
 #[test]
