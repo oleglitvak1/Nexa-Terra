@@ -736,7 +736,7 @@ mod tests {
         let saved = ron::to_string(c).unwrap();
         let mut old = saved.clone();
         for name in c.modules().iter().filter_map(|m| m.def().name.as_ref()) {
-            old = old.replacen(&format!(",name:Some({name:?})"), "", 1);
+            old = old.replacen(&format!(",name:{name:?}"), "", 1);
         }
         let old = old
             .replacen(
@@ -762,7 +762,7 @@ mod tests {
         let loaded: Colony = ron::from_str(&pre_m6_save(&c)).unwrap();
         assert_eq!(loaded, c);
         let smelter = loaded.module(&id("smelter_01")).unwrap();
-        assert_eq!(smelter.def().display_name(), "the smelter");
+        assert_eq!(smelter.def().display_name(), "smelter");
     }
 
     #[test]

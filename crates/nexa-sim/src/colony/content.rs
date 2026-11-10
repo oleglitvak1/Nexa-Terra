@@ -27,8 +27,14 @@ pub struct ColonyDef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleDef {
     pub id: ModuleId,
-    /// How plain-words text names it, e.g. "the smelter"; the ID stands in without one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// How plain-words text names it, written bare (`name: "smelter"`). The
+    /// ID stands in without one.
+    #[serde(
+        default,
+        deserialize_with = "crate::present",
+        serialize_with = "crate::bare",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub name: Option<String>,
     #[serde(default)]
     pub kind: ModuleKind,

@@ -247,7 +247,7 @@ fn the_list_shows_every_card_in_plain_words_then_its_command_line_dimmer() {
     let first = find("> 1 P1 When power drops below 25%: shut down the smelter, start");
     let command = find("IF grid.power < 25% THEN shutdown smelter_01");
     assert!(first < command, "plain words come first");
-    let third = find("  3 P2 When hab 2 rises above 16.0C: send heat to hab 1.");
+    let third = find("  3 P2 When hab 2 is warmer than 16.0 C: send heat to hab 1.");
     assert_eq!(
         rows[third + 1].trim(),
         "IF hab_02.temp > 16.0C THEN divert heat TO hab_01"
@@ -279,6 +279,10 @@ fn the_terminal_opens_on_the_postures_with_their_names_and_summaries() {
         assert!(screen.contains(&start), "{start}");
     }
     assert!(screen.contains("[A] ADVANCED"));
+    // In content order: the safe posture first.
+    let at = |name: &str| screen.find(name).unwrap();
+    assert!(at("Protect the habs") < at("Balanced"));
+    assert!(at("Balanced") < at("Design doc example"));
 }
 
 #[test]

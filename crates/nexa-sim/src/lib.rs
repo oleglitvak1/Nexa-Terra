@@ -78,6 +78,19 @@ struct RawWorld {
     voyage: Option<Voyage>,
 }
 
+/// Writes a present optional field bare, for [`present`] to read back. Pair it
+/// with `skip_serializing_if = "Option::is_none"`.
+pub(crate) fn bare<S, T>(value: &Option<T>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+    T: Serialize,
+{
+    match value {
+        Some(v) => v.serialize(s),
+        None => s.serialize_none(),
+    }
+}
+
 /// Reads a field a save writes bare, not as an RON `Some(..)`.
 pub(crate) fn present<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
 where

@@ -147,9 +147,90 @@ impl std::error::Error for PresetError {}
 pub struct OrdersDef {
     pub tuning: OrderTuning,
     pub editor: EditorTuning,
-    /// Postures by ID, e.g. `caretaker`.
+    /// Postures by ID, e.g. `caretaker`, in content order.
     #[serde(default)]
-    pub presets: BTreeMap<String, Preset>,
+    pub presets: Presets,
+}
+
+/// Postures by ID, kept in the order the content lists them, so screens can
+/// offer them in that order. IDs are unique.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Presets(Vec<(String, Preset)>);
+
+impl Presets {
+    pub fn get(&self, id: &str) -> Option<&Preset> {
+        self.0.iter().find(|(k, _)| k == id).map(|(_, p)| p)
+    }
+
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.get(id).is_some()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Preset)> {
+        self.0.iter().map(|(k, p)| (k, p))
+    }
+
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.0.iter().map(|(k, _)| k)
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = &Preset> {
+        self.0.iter().map(|(_, p)| p)
+    }
+}
+
+impl std::ops::Index<&str> for Presets {
+    type Output = Preset;
+
+    fn index(&self, id: &str) -> &Preset {
+        self.get(id)
+            .unwrap_or_else(|| panic!("no preset named {id:?}"))
+    }
+}
+
+impl<'a> IntoIterator for &'a Presets {
+    type Item = (&'a String, &'a Preset);
+    type IntoIter = Box<dyn Iterator<Item = Self::Item> + 'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+
+impl Serialize for Presets {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(self.iter())
+    }
+}
+
+impl<'de> Deserialize<'de> for Presets {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Presets;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map of postures by ID")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Presets, A::Error> {
+                let mut presets = Presets::default();
+                while let Some((id, preset)) = map.next_entry::<String, Preset>()? {
+                    if presets.contains_key(&id) {
+                        return Err(serde::de::Error::custom(format!(
+                            "preset {id} is listed twice"
+                        )));
+                    }
+                    presets.0.push((id, preset));
+                }
+                Ok(presets)
+            }
+        }
+        d.deserialize_map(Visit)
+    }
 }
 
 /// Shipped tuning and presets, compiled in so loading needs no file I/O.
@@ -301,14 +382,14 @@ impl Trigger {
         match self {
             Trigger::PowerBelowPercent(p) => format!("power drops below {p}%"),
             Trigger::TempBelow { module, centi_c } => format!(
-                "{} falls below {}",
+                "{} is colder than {} C",
                 name(colony, module),
-                format_centi_c(*centi_c)
+                format_degrees(*centi_c)
             ),
             Trigger::TempAbove { module, centi_c } => format!(
-                "{} rises above {}",
+                "{} is warmer than {} C",
                 name(colony, module),
-                format_centi_c(*centi_c)
+                format_degrees(*centi_c)
             ),
         }
     }
@@ -366,7 +447,7 @@ impl Action {
             Action::Deactivate(id) => format!("shut down {}", name(colony, id)),
             Action::DivertHeat { to } => format!("send heat to {}", name(colony, to)),
             Action::ShareHeat { line_of } => {
-                format!("share heat evenly on {}'s line", name(colony, line_of))
+                format!("share heat across {}'s line", name(colony, line_of))
             }
         }
     }
@@ -591,11 +672,17 @@ fn join_or_dots(parts: impl Iterator<Item = String>, sep: &str) -> String {
     }
 }
 
-/// A module's name for plain words; a module the colony lacks goes by its ID.
-fn name<'a>(colony: &'a Colony, id: &'a ModuleId) -> &'a str {
-    colony
+/// A module's name for plain words: "the smelter", but "heater 2" when the
+/// name has a number. A module the colony lacks goes by its ID.
+fn name(colony: &Colony, id: &ModuleId) -> String {
+    let name = colony
         .module(id)
-        .map_or(id.as_str(), |m| m.def().display_name())
+        .map_or(id.as_str(), |m| m.def().display_name());
+    if name.chars().any(|c| c.is_ascii_digit()) {
+        name.to_string()
+    } else {
+        format!("the {name}")
+    }
 }
 
 fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
@@ -604,12 +691,17 @@ fn temp(colony: &Colony, id: &ModuleId) -> Option<i32> {
 
 /// Centi-degrees as degrees C with one decimal place, rounding half away from zero.
 pub fn format_centi_c(centi_c: i32) -> String {
+    format!("{}C", format_degrees(centi_c))
+}
+
+/// [`format_centi_c`] without the unit.
+fn format_degrees(centi_c: i32) -> String {
     const TENTHS_PER_DEGREE: i64 = 10;
     let centi_per_tenth = i64::from(CENTI_PER_DEGREE) / TENTHS_PER_DEGREE;
     let tenths = (i64::from(centi_c).abs() + centi_per_tenth / 2) / centi_per_tenth;
     let sign = if centi_c < 0 && tenths != 0 { "-" } else { "" };
     format!(
-        "{sign}{}.{}C",
+        "{sign}{}.{}",
         tenths / TENTHS_PER_DEGREE,
         tenths % TENTHS_PER_DEGREE
     )
@@ -741,12 +833,64 @@ mod tests {
         );
         assert_eq!(
             order.describe(&ash_plain()),
-            "When hab 1 falls below -5.0C and hab 2 rises above 14.5C: \
-             start heater 2, share heat evenly on hab 1's line."
+            "When hab 1 is colder than -5.0 C and hab 2 is warmer than 14.5 C: \
+             start heater 2, share heat across hab 1's line."
         );
         assert_eq!(
             card(1, vec![], vec![]).describe(&ash_plain()),
             "When ...: ..."
+        );
+    }
+
+    #[test]
+    fn every_shipped_card_reads_in_plain_words() {
+        let protect = [
+            "When power drops below 25%: shut down the smelter, start heater 2, send heat to hab 1.",
+            "When hab 1 is warmer than 16.0 C: send heat to hab 2.",
+            "When hab 2 is warmer than 16.0 C: send heat to hab 1.",
+        ];
+        let colony = ash_plain();
+        let lines = |id: &str| -> Vec<String> {
+            OrdersDef::shipped().presets[id]
+                .cards
+                .iter()
+                .map(|c| c.describe(&colony))
+                .collect()
+        };
+        assert_eq!(lines("protect-habs"), protect);
+        assert_eq!(lines("caretaker"), protect);
+        assert_eq!(
+            lines("doc-example"),
+            ["When power drops below 25%: shut down the smelter, send heat to hab 1."]
+        );
+        assert_eq!(OrdersDef::shipped().presets.keys().count(), 3);
+    }
+
+    #[test]
+    fn postures_keep_their_content_order_and_unique_ids() {
+        let ids: Vec<&String> = OrdersDef::shipped().presets.keys().collect();
+        assert_eq!(ids, ["protect-habs", "caretaker", "doc-example"]);
+        let twice = STANDING_ORDERS.replacen("\"doc-example\":", "\"caretaker\":", 1);
+        assert_ne!(twice, STANDING_ORDERS);
+        assert!(OrdersDef::from_ron(&twice)
+            .unwrap_err()
+            .contains("listed twice"));
+    }
+
+    #[test]
+    fn a_name_without_a_number_takes_the() {
+        let colony = ash_plain();
+        let order = card(
+            1,
+            vec![Trigger::PowerBelowPercent(10)],
+            vec![
+                Action::Deactivate(id("scrubber_01")),
+                Action::Activate(id("heater_01")),
+            ],
+        );
+        assert_eq!(
+            order.describe(&colony),
+            "When power drops below 10%: shut down the scrubber, start heater 1."
         );
     }
 
