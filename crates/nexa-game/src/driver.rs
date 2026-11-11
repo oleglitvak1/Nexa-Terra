@@ -1,6 +1,6 @@
 //! Plays a script through the real screens: player actions become the key
-//! presses a player would make (the Split on the crew screen, launch and
-//! hazards on the cockpit screen), so a scripted run exercises the same input
+//! presses a player would make (the Split on the crew screen, launch on its
+//! confirmation, hazards on the cockpit screen), so a scripted run exercises the same input
 //! code. Running the colony and loading an orders preset go straight to the
 //! sim; the orders editor builds cards one slot at a time, which a script
 //! doesn't need to repeat.
@@ -21,6 +21,7 @@ pub enum On {
     Colony,
     Orders,
     Crew,
+    Launch,
     Voyage,
 }
 
@@ -125,6 +126,8 @@ impl Driver {
                 if let Some(no) = self.need(on, On::Colony, "launch") {
                     return no;
                 }
+                // Open the confirmation, then confirm it.
+                self.queue.push_back(Act::Key(KeyCode::Enter));
                 self.queue
                     .push_back(Act::Sim(Step::Expect(Expect::Ship("slip".into()))));
                 Act::Key(KeyCode::L)
@@ -156,7 +159,7 @@ impl Driver {
                 Act::Idle
             }
             Step::Close => match on {
-                On::Crew | On::Orders => Act::Key(KeyCode::Escape),
+                On::Crew | On::Orders | On::Launch => Act::Key(KeyCode::Escape),
                 On::Voyage if world.voyage.as_ref().is_some_and(|v| !v.in_transit()) => {
                     Act::Key(KeyCode::Escape)
                 }
@@ -378,6 +381,20 @@ mod tests {
             Act::Fail(why, 1) => assert!(why.starts_with("line 1:"), "{why}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn launch_opens_the_confirmation_and_confirms_it() {
+        let world = World::landfall();
+        let mut d = Driver::new(parse("launch").unwrap());
+        assert_eq!(d.act(On::Colony, &world), Act::Key(KeyCode::L));
+        assert_eq!(d.act(On::Launch, &world), Act::Key(KeyCode::Enter));
+        assert_eq!(
+            d.act(On::Colony, &world),
+            Act::Sim(Step::Expect(Expect::Ship("slip".into())))
+        );
+        let mut d = Driver::new(parse("close").unwrap());
+        assert_eq!(d.act(On::Launch, &world), Act::Key(KeyCode::Escape));
     }
 
     #[test]

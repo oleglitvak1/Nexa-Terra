@@ -299,6 +299,9 @@ pub(crate) fn log_event(now: Tick, event: &SimEvent, fires: &mut [u64]) {
             let names: Vec<_> = flight.iter().map(|c| c.as_str()).collect();
             println!("[SIM] {now}  split confirmed, flying: {}", names.join(", "))
         }
+        SimEvent::OreCrateLoaded { id, crates } => {
+            println!("[SIM] {now}  {id} loaded, {crates} aboard")
+        }
         SimEvent::CrewStressChanged { crew, level } => {
             println!("[SIM] {now}  {crew} is {}", level.label())
         }

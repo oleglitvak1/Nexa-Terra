@@ -3,8 +3,9 @@
 //! An amber terminal that boots, waits for a key, then shows the colony map
 //! and its status, with the simulation running in real time with pause. The
 //! Caretaker terminal edits Standing Orders and the crew screen sets the Split,
-//! both while the colony is held. `[L]` launches The Mullein into The Slip:
-//! the voyage screen flies her Sol by Sol to Scrap Barge 77, and the colony
+//! both while the colony is held. `[L]` opens the launch confirmation, which
+//! shows The Mullein's cargo; `[ENTER]` sends her into The Slip, where the
+//! voyage screen flies her Sol by Sol to Scrap Barge 77, and the colony
 //! catches up on arrival.
 //!
 //! Testing: `--seed N` fixes the RNG. `--script FILE` plays a script (see
@@ -16,6 +17,7 @@
 mod colony_view;
 mod crew_view;
 mod driver;
+mod launch_view;
 mod orders_view;
 mod pacing;
 mod platform;
@@ -76,6 +78,8 @@ enum Screen {
     Orders(OrdersEditor),
     /// Held too: the Split is set between hours.
     Crew(CrewScreen),
+    /// The launch confirmation; held while the player decides.
+    Launch,
     /// In The Slip the colony is held by the sim until arrival.
     Voyage(VoyageScreen),
 }
@@ -130,6 +134,7 @@ impl App {
             Screen::Online => On::Colony,
             Screen::Orders(_) => On::Orders,
             Screen::Crew(_) => On::Crew,
+            Screen::Launch => On::Launch,
             Screen::Voyage(_) => On::Voyage,
         }
     }
@@ -179,7 +184,7 @@ impl App {
                     Some(KeyCode::Escape) => return false,
                     Some(KeyCode::O) => self.screen = Screen::Orders(OrdersEditor::new()),
                     Some(KeyCode::C) => self.screen = Screen::Crew(CrewScreen::new(&self.world)),
-                    Some(KeyCode::L) => self.launch(),
+                    Some(KeyCode::L) => self.screen = Screen::Launch,
                     Some(KeyCode::Space) => self.clock.paused = !self.clock.paused,
                     Some(KeyCode::Key1) => self.clock.set_speed(1),
                     Some(KeyCode::Key2) => self.clock.set_speed(2),
@@ -198,6 +203,11 @@ impl App {
                     }
                 }
             }
+            Screen::Launch => match key.map(launch_view::handle) {
+                Some(launch_view::Choice::Launch) => self.launch(),
+                Some(launch_view::Choice::Stay(Outcome::Close)) => self.screen = Screen::Online,
+                _ => {}
+            },
             Screen::Voyage(screen) => {
                 if let Some(key) = key {
                     let outcome = screen.handle(key, &mut self.world);
@@ -224,7 +234,7 @@ impl App {
         true
     }
 
-    /// Launch, or say in the base log why not.
+    /// Launch, or go back to the colony and say in the base log why not.
     fn launch(&mut self) {
         let at = self.world.now;
         match self.world.launch(&mut self.universe) {
@@ -232,10 +242,13 @@ impl App {
                 self.log_events(at, &events);
                 self.screen = Screen::Voyage(VoyageScreen::new(&self.world, &events));
             }
-            Err(e) => self.push_log(format!(
-                "{at} LAUNCH REFUSED: {}",
-                voyage_view::launch_refusal(&e)
-            )),
+            Err(e) => {
+                self.screen = Screen::Online;
+                self.push_log(format!(
+                    "{at} LAUNCH REFUSED: {}",
+                    voyage_view::launch_refusal(&e)
+                ));
+            }
         }
     }
 
@@ -289,7 +302,12 @@ impl App {
                     &status,
                 );
                 colony_view::draw_map(t, &self.world.colony, blink);
-                let next = colony_view::draw_status(t, &self.world.colony, colony_view::MAP_ROW);
+                let next = colony_view::draw_status(
+                    t,
+                    &self.world.colony,
+                    &self.world.ship,
+                    colony_view::MAP_ROW,
+                );
                 colony_view::draw_log(t, self.log.iter(), next + 1, HELP_ROW);
                 t.put_str(
                     MARGIN,
@@ -302,6 +320,11 @@ impl App {
                 let title = "MULLEIN SYSTEMS // CARETAKER TERMINAL";
                 draw_title(t, title, self.world.now, "HELD");
                 editor.draw(t, &self.world, HELP_ROW);
+            }
+            Screen::Launch => {
+                let title = "MULLEIN SYSTEMS // LAUNCH PAD";
+                draw_title(t, title, self.world.now, "HELD");
+                launch_view::draw(t, &self.world, HELP_ROW);
             }
             Screen::Voyage(screen) => {
                 let title = "MULLEIN SYSTEMS // COCKPIT";

@@ -20,7 +20,8 @@
 //! expect fuel 500           # fail the script unless this holds
 //! ```
 //!
-//! `expect` keys: `sol`, `fuel`, `pods`, `credits`, `crates`, `integrity`,
+//! `expect` keys: `sol`, `fuel`, `pods`, `credits`, `crates`, `ore` (kg in the
+//! ground stockpile), `integrity`,
 //! `delay`, `random-delay`, `settled` (hazards answered), `ship` (pad, slip, holding), `machine ID STATE`,
 //! `stress CREW LEVEL`, `side CREW SIDE`. Verbs for systems not built yet
 //! (`dock`, `haggle`, `give-fuel`, `audit`, `return`, `land`, `install-filters`)
@@ -72,6 +73,8 @@ pub enum Expect {
     Pods(u8),
     Credits(u32),
     Crates(usize),
+    /// Ore in the ground stockpile, in kg.
+    Ore(u32),
     Integrity(u8),
     Delay(u32),
     RandomDelay(u32),
@@ -93,6 +96,7 @@ impl Expect {
             Expect::Pods(n) => cmp("pods", *n, world.ship.pods()),
             Expect::Credits(n) => cmp("credits", *n, world.credits),
             Expect::Crates(n) => cmp("crates", *n, world.ship.cargo().len()),
+            Expect::Ore(n) => cmp("ore", *n, world.colony.ore_kg()),
             Expect::Integrity(n) => cmp("integrity", *n, world.ship.cargo_integrity_pct()),
             Expect::Delay(n) => cmp("delay", *n, voyage.map_or(0, |v| v.delay_sols())),
             Expect::RandomDelay(n) => cmp(
@@ -241,6 +245,7 @@ fn parse_expect(args: &[&str]) -> Result<Expect, String> {
         ["pods", n] => Expect::Pods(number(n)?),
         ["credits", n] => Expect::Credits(number(n)?),
         ["crates", n] => Expect::Crates(number(n)?),
+        ["ore", n] => Expect::Ore(number(n)?),
         ["integrity", n] => Expect::Integrity(number(n)?),
         ["delay", n] => Expect::Delay(number(n)?),
         ["random-delay", n] => Expect::RandomDelay(number(n)?),
@@ -495,6 +500,18 @@ mod tests {
         let (world, r) = run_all("orders protect-habs\norders nonsense");
         assert!(matches!(r, Err((2, RunError::Refused(_)))));
         assert_eq!(world.orders.len(), protect.len());
+    }
+
+    #[test]
+    fn expect_ore_checks_the_stockpile() {
+        // The shipped hold is full, so a Sol of smelting stays on the ground.
+        let rate = World::landfall().colony.ore_def().unwrap().kg_per_hour;
+        let sol = u64::from(rate) * TICKS_PER_SOL;
+        let (_, r) = run_all(&format!("expect ore 0\nrun 1\nexpect ore {sol}"));
+        assert_eq!(r, Ok(()));
+        let (_, r) = run_all("run 1\nexpect ore 0");
+        assert!(matches!(r, Err((2, RunError::Expectation(_)))));
+        assert_eq!(parse("expect ore lots").unwrap_err().line, 1);
     }
 
     #[test]

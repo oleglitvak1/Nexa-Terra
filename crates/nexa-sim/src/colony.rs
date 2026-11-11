@@ -9,7 +9,7 @@ pub use content::{
 pub use save::SaveError;
 
 use crate::grid::Grid;
-use crate::machines::Machine;
+use crate::machines::{Machine, MachineState};
 use crate::parts::{Inventory, PartKind};
 use crate::SimEvent;
 use nexa_types::{Command, Guard, ModuleId};
@@ -132,6 +132,23 @@ impl Colony {
         self.modules.iter().find_map(|m| m.def.ore.as_ref())
     }
 
+    /// Whole crates' worth of ore in the stockpile.
+    pub fn full_crates(&self) -> u32 {
+        // Content refuses a zero crate mass.
+        self.ore_def()
+            .and_then(|ore| self.ore_kg.checked_div(ore.crate_kg))
+            .unwrap_or(0)
+    }
+
+    /// Take up to `n` whole crates' worth out of the stockpile, once they are
+    /// aboard. Callers load them first, so ore is never lost in between.
+    pub(crate) fn pack_crates(&mut self, n: u32) {
+        let Some(crate_kg) = self.ore_def().map(|ore| ore.crate_kg) else {
+            return;
+        };
+        self.ore_kg -= n.min(self.full_crates()) * crate_kg;
+    }
+
     /// Whether `guard` may be set on this module: it exists, draws power,
     /// and the thresholds are ordered.
     pub fn check_guard(&self, id: &ModuleId, guard: Guard) -> Result<(), CommandError> {
@@ -218,11 +235,14 @@ impl Module {
 }
 
 impl Colony {
-    /// One hour: route power, then heat, then update machine states and wear.
+    /// One hour: route power, then heat, then update machine states and wear,
+    /// then add the hour's ore.
     pub fn tick(&mut self) -> Vec<SimEvent> {
         self.route_power();
         self.route_heat();
-        self.update_machines()
+        let events = self.update_machines();
+        self.make_ore();
+        events
     }
 
     pub fn apply(&mut self, cmd: &Command) -> Result<Vec<SimEvent>, CommandError> {
@@ -376,6 +396,19 @@ impl Colony {
             let t = t - (t - ambient) * loss / 100;
             m.temp_centi_c = t.clamp(i32::MIN.into(), i32::MAX.into()) as i32;
         }
+    }
+
+    /// The producer adds its rate for an hour it ran and ended in its band.
+    fn make_ore(&mut self) {
+        let made: u32 = self
+            .modules
+            .iter()
+            .filter(|m| m.running())
+            .filter(|m| m.machine.as_ref().map(Machine::state) == Some(MachineState::Nominal))
+            .filter_map(|m| m.def.ore.as_ref())
+            .map(|ore| ore.kg_per_hour)
+            .sum();
+        self.ore_kg = self.ore_kg.saturating_add(made);
     }
 
     fn update_machines(&mut self) -> Vec<SimEvent> {
@@ -1093,6 +1126,85 @@ mod tests {
             c.apply(&Command::DivertHeat { to: id("a") }),
             Err(CommandError::NotOnHeatLine(id("a")))
         );
+    }
+
+    // --- Ore: a smelter on its own power line, in its band at 20 C.
+
+    /// A smelter making `kg_per_hour` into 1,000 kg crates, kept in its band
+    /// at ambient. Its band and wear are bent per test.
+    fn smelter_rig(kg_per_hour: u32) -> Colony {
+        Colony::from_ron(&format!(
+            r#"(
+                ambient_centi_c: 2000, heat_loss_percent: 100, layout: ["GS", "=="],
+                modules: [
+                    (id: "gen", glyph: 'G', output_kw: 10),
+                    (id: "smelter", glyph: 'S', draw_kw: 5, machine: Some((
+                        tolerance: (min_centi_c: 0, max_centi_c: 5000), wear_bp_per_hour: 1)),
+                        ore: Some((kg_per_hour: {kg_per_hour}, crate_kg: 1000, cargo: "raw silicon"))),
+                ],
+            )"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_running_nominal_smelter_adds_its_rate_each_hour() {
+        let mut c = smelter_rig(300);
+        run(&mut c, 3);
+        assert_eq!(c.ore_kg(), 900);
+        assert_eq!(state(&c, "smelter"), MachineState::Nominal);
+    }
+
+    #[test]
+    fn ore_is_made_only_while_the_smelter_runs_and_is_nominal() {
+        // Switched off.
+        let mut c = smelter_rig(300);
+        c.apply(&Command::Deactivate(id("smelter"))).unwrap();
+        run(&mut c, 3);
+        assert_eq!(c.ore_kg(), 0, "switched off");
+
+        // Switched on but unpowered.
+        let mut c = smelter_rig(300);
+        c.apply(&Command::Deactivate(id("gen"))).unwrap();
+        run(&mut c, 3);
+        assert_eq!(c.ore_kg(), 0, "unpowered");
+
+        // Running but out of its band: too cold, still wearing toward failure.
+        let mut c = smelter_rig(300);
+        c.ambient_centi_c = -1000;
+        run(&mut c, 3);
+        assert_eq!(state(&c, "smelter"), MachineState::Freeze);
+        assert_eq!(c.ore_kg(), 0, "freezing");
+
+        // Failed: frozen solid, then warmed back into the band but not repaired.
+        let mut c = smelter_rig(300);
+        c.ambient_centi_c = -1000;
+        c.modules[1].def.machine.as_mut().unwrap().wear_bp_per_hour = 10_000;
+        run(&mut c, 2);
+        assert_eq!(state(&c, "smelter"), MachineState::Offline);
+        c.ambient_centi_c = 2000;
+        run(&mut c, 3);
+        assert_eq!(c.ore_kg(), 0, "failed");
+    }
+
+    #[test]
+    fn the_stockpile_stops_at_the_top_of_u32() {
+        let mut c = smelter_rig(300);
+        c.ore_kg = u32::MAX - 100;
+        run(&mut c, 2);
+        assert_eq!(c.ore_kg(), u32::MAX);
+    }
+
+    #[test]
+    fn packing_crates_takes_whole_crates_from_the_stockpile() {
+        let mut c = smelter_rig(300);
+        run(&mut c, 7);
+        assert_eq!((c.ore_kg(), c.full_crates()), (2100, 2));
+        c.pack_crates(2);
+        assert_eq!((c.ore_kg(), c.full_crates()), (100, 0));
+        // Never more than the whole crates the stockpile holds.
+        c.pack_crates(1);
+        assert_eq!(c.ore_kg(), 100);
     }
 
     // --- Scenarios on the shipped landing site.

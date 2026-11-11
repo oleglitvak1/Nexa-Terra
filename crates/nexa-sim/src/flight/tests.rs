@@ -678,3 +678,16 @@ fn ground_crew_feel_the_sols_away_and_the_flight_crew_do_not() {
         assert_eq!(v.stress_bp, 0, "{flying}");
     }
 }
+
+#[test]
+fn the_smelter_s_ore_piles_up_on_the_ground_while_she_is_away() {
+    // An empty hold, so only her being away keeps the crates off it.
+    let mut world = crewed_with(3, 0);
+    world.launch(&mut OfflineUniverse::default()).unwrap();
+    let (_, colony) = fly_apart(&mut world, "pay");
+    assert!(!colony
+        .iter()
+        .any(|e| matches!(e, SimEvent::OreCrateLoaded { .. })));
+    assert!(world.ship.cargo().is_empty());
+    assert!(world.colony.ore_kg() >= world.colony.ore_def().unwrap().crate_kg);
+}
